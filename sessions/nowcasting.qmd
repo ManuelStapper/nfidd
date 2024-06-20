@@ -39,7 +39,7 @@ We call the _reporting time_ the time at which a data point (e.g. a time or day 
 Similar to the data discussed in the preceding session, this time is often only available as a date, i.e. censored at the scale of a day.
 
 We can simulate this reporting process.
-Let us assume that the symptom onsets are reported with a delay, and that this delay is characterised by a lognormal distribution with meanlog 1 and sdlog 0.5:
+Let us assume that the symptom onsets are reported with a delay, and that this delay is characterised by a lognormal distribution with meanlog 1 and sdlog 0.5.
 In order to do so, we perform a very similar simulation to what we did in the [session on delay distributions](delay-distributions#simulating-delayed-epidemiological-data), except now we don't simulate hospitalisations but reports of symptom onsets:
 
 ```{r onset_report}
@@ -57,15 +57,12 @@ We then assume that we're 40 days into the outbreak, i.e. we only consider obser
 cutoff <- 71
 df_co <- df |>
   filter(report_time < cutoff)
-
-df_on <- df |>
-  filter(onset_time < cutoff)
 ```
 
 We can now convert this to a time series of symptom onsets and reports:
 
 ```{r aggregate}
-## create time series of onsets and reports
+## create aggregated time series of onsets and reports from cut-off data
 df_co <- df_co |>
   transmute(
     infecton_day = floor(infection_time),
@@ -97,13 +94,14 @@ ggplot(combined, aes(x = day, y = value)) +
   geom_col()
 ```
 
-Looking at the four plots in isolation we would conclude very different things about the epidemic: symptom onsets seem to have flattened off and perhaps are going down, whereas reports are increasing rapidly.
+Looking at the three plots in isolation we would conclude very different things about the epidemic: symptom onsets seem to have flattened off and perhaps are going down, whereas reports are increasing rapidly.
 
 This apparent contradiction appears because onsets are reported with a delay.
-By cutting off at a certain _reporting_ date, we will many of the recent symptom onsets still to be reported.
+By cutting off at a certain _reporting_ date, we cannot include many of the recent symptom onsets that are still to be reported.
 We can see that if we plot the final data set alongside the cut-off one:
 
 ```{r plot_cut_final}
+# create aggregated time-series using the complete outbreak data
 final <- df |>
   transmute(onset_day = floor(onset_time))
 final_onset_ts <- final |>
@@ -112,6 +110,7 @@ final_all_days <- expand_grid(day = seq(0, max(final_onset_ts$day))) |>
   full_join(final_onset_ts, by = "day") |>
   replace_na(list(onsets = 0)) |>
   mutate(cutoff = "final")
+# combine with cut-off data and plot
 intermediate <- combined |>
   filter(variable == "onsets") |>
   select(-variable) |>
@@ -142,7 +141,7 @@ Estimating the "true curve" (i.e. what we expect to see once the data are comple
 
 Here we assume that the delay distribution is known and that we can use it to nowcast the most recent data. In practice, the delay distribution is often not known and needs to be estimated from the data. We could do this using methods from [the session on biases in delay distributions](sessions/biases-in-delay-distributions.qmd).
 
-In the [session on convolutions](using-delay-distributions-to-model-the-data-generating-process-of-an-epidemic#estimating-a-time-series-of-infections) we used delay distributions convolved with the infection times to estimate the time series of symptom onsets. A simple way to nowcast is to use the same approach but using the cumulative distribution function of the delay distribution rather than the probability density function and only apply it to the most recent data as this is the only data that can be subject to change (due to delays in reporting). We will build intuition for this as usual using simulation. First we define the proportion reported using a delay distribution, again using a lognormal distribution with meanlog 1 and sdlog 0.5:
+In the [session on convolutions](using-delay-distributions-to-model-the-data-generating-process-of-an-epidemic#estimating-a-time-series-of-infections) we used delay distributions convolved with the infection times to estimate the time series of symptom onsets. A simple way to nowcast is to use the same approach but using the cumulative distribution function of the delay distribution rather than the probability density function and only apply it to the most recent data as this is the only data that can be subject to change (due to delays in reporting). We will build intuition for this as usual using simulation. First we define the proportion reported over time using a delay distribution, again using a lognormal distribution with meanlog 1 and sdlog 0.5:
 
 ```{r}
 proportion_reported <- plnorm(1:15, 1, 0.5)
@@ -170,7 +169,7 @@ Spend a few minutes trying to understand the code above. What is the `proportion
 
 ::: {.callout-note collapse="true"}
 ## The solution
-- The `proportion_reported` is the cumulative distribution function of the delay distribution. It gives the probability that a report is made on day 1 or earlier, day 2 or earlier, etc. Note that for days more that 15 days into the past 
+- The `proportion_reported` is the cumulative distribution function of the delay distribution. It gives the probability that a report is made on day 1 or earlier, day 2 or earlier, etc. Note that for days more that 15 days into the past we assume reporting is complete.
 - The `reported_onsets` are the number of onsets that are reported on each day. This is calculated by multiplying the number of onsets by the proportion of onsets that are reported on each day. It has Poisson noise added to it to simulate the stochasticity in the reporting process.
 :::
 
@@ -190,7 +189,7 @@ Familiarise yourself with the model above. What does it do?
 ## Solution
 - On line 2 we define a new function `condition_onsets_by_report.stan` which takes the number of onsets and reports and the delay distribution as input and returns the nowcasted number of onsets.
 - On line 17, this function is used to calculate the nowcasted number of onsets and this is then used in the likelihood.
-- On line 21, we define the generative process for the number of onsets. Here we assume that onsets are independent with each drawn from a normal distribution.
+- On line 21, we define the generative process for the number of onsets. Here we assume that onsets are independent with each drawn from a normal distribution with mean 5 and SD 20.
 :::
 
 Once again we can generate estimates from this model:
@@ -230,7 +229,9 @@ reported_onset_df |>
   ggplot(aes(x = day, y = onsets)) +
   geom_col() +
   geom_ribbon(aes(ymin = lower, ymax = upper), alpha = 0.5) +
-  geom_line(aes(y = median))
+  geom_line(aes(y = median), alpha = 0.5) +
+  labs(title = "Symptom onsets: simple nowcast",
+       subtitle = "Actual (bar) and nowcast (median and 90%CrI, shaded)")
 ```
 
 ::: {.callout-tip}
@@ -239,7 +240,7 @@ As we found in the [using delay distributions to model the data generating proce
 
 ## Adding in a geometric random walk to the nowcasting model
 
-As we saw in the [session on the renewal equation](R-estimation-and-the-renewal-equation), a geometric random walk is a simple way to model multiplicative growth. Adding this into our simple nowcasting model may help us to better capture the generative process of the data and so produce a better nowcast.
+As we saw in the [session on the renewal equation](R-estimation-and-the-renewal-equation), a geometric random walk is a simple way to model multiplicative growth. Remember, the prior model for the geometric random walk assumes that onsets are the same as the previous day with statistical noise. Adding this into our simple nowcasting model may help us to better capture the generative process of the data and so produce a better nowcast.
 
 We first load the model
 
@@ -280,7 +281,9 @@ reported_onset_df |>
   ggplot(aes(x = day, y = onsets)) +
   geom_col() +
   geom_ribbon(aes(ymin = lower, ymax = upper), alpha = 0.5) +
-  geom_line(aes(y = median))
+  geom_line(aes(y = median), alpha = 0.5) +
+    labs(title = "Symptom onsets: nowcast with geometric random walk",
+       subtitle = "Actual (bar) and nowcast (median and 90%CrI, shaded)")
 ```
 
 ::: {.callout-tip}
@@ -291,7 +294,7 @@ What do you think of the nowcast now? Does it look better than the previous one?
 ::: {.callout-note collapse="true"}
 ## Solution
 - The nowcast better matches the ultimately observed data.
-The geometric random walk allows the model to capture the multiplicative growth in the data and so better capture that current indidence is related to past incidence.
+The geometric random walk allows the model to capture the multiplicative growth in the data and so better capture that current incidence is related to past incidence.
 - This should be particularly true when the data is more truncated (i.e nearer to the date of the nowcast) as the geometric random walk allows the model to extrapolate incidence based on previous incidence rather than relying on the prior distribution as the simpler model did.
 - However, the model is still quite simple and so may struggle to capture more complex patterns in the data.
 In particular the prior model for the geometric random walk assumes that onsets are the same as the previous day with statistical noise.
