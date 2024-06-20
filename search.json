@@ -1,0 +1,926 @@
+[
+  {
+    "objectID": "help.html",
+    "href": "help.html",
+    "title": "Getting help",
+    "section": "",
+    "text": "For any questions about the course or its content, feel free to use the Discussion board"
+  },
+  {
+    "objectID": "sessions/overview-of-available-tools.html",
+    "href": "sessions/overview-of-available-tools.html",
+    "title": "Overview of available tools",
+    "section": "",
+    "text": "The aim of this session is to try out some of the tools that are available that use some of the ideas we have discussed in this course.",
+    "crumbs": [
+      "Overview of available tools"
+    ]
+  },
+  {
+    "objectID": "sessions/overview-of-available-tools.html#epinow2",
+    "href": "sessions/overview-of-available-tools.html#epinow2",
+    "title": "Overview of available tools",
+    "section": "EpiNow2",
+    "text": "EpiNow2",
+    "crumbs": [
+      "Overview of available tools"
+    ]
+  },
+  {
+    "objectID": "sessions/overview-of-available-tools.html#epinowcast",
+    "href": "sessions/overview-of-available-tools.html#epinowcast",
+    "title": "Overview of available tools",
+    "section": "Epinowcast",
+    "text": "Epinowcast",
+    "crumbs": [
+      "Overview of available tools"
+    ]
+  },
+  {
+    "objectID": "sessions/overview-of-available-tools.html#epiestim",
+    "href": "sessions/overview-of-available-tools.html#epiestim",
+    "title": "Overview of available tools",
+    "section": "EpiEstim",
+    "text": "EpiEstim",
+    "crumbs": [
+      "Overview of available tools"
+    ]
+  },
+  {
+    "objectID": "sessions/using-delay-distributions-to-model-the-data-generating-process-of-an-epidemic.html",
+    "href": "sessions/using-delay-distributions-to-model-the-data-generating-process-of-an-epidemic.html",
+    "title": "Using delay distributions to model the data generating process",
+    "section": "",
+    "text": "Delay distributions at the population level",
+    "crumbs": [
+      "Using delay distributions to model the data generating process"
+    ]
+  },
+  {
+    "objectID": "sessions/using-delay-distributions-to-model-the-data-generating-process-of-an-epidemic.html#delay-distributions-and-convolutions",
+    "href": "sessions/using-delay-distributions-to-model-the-data-generating-process-of-an-epidemic.html#delay-distributions-and-convolutions",
+    "title": "Using delay distributions to model the data generating process",
+    "section": "Delay distributions and convolutions",
+    "text": "Delay distributions and convolutions\nIn the last session we simulated individual outcomes from a delay distribution, and then re-estimated the corresponding parameters. However, sometimes we do not have data on these individual-level outcomes, either because they are not recorded or because they cannot be shared, for example due to privacy concerns. At the population level, individual level delays translate into convolutions.\nIf we have a time series of infections \\(I_t\\) (\\(t=1, 2, 3, \\ldots, t_\\mathrm{max}\\)), where \\(t\\) denotes the day on which the infections occur, and observable outcomes occur with a delay given by a delay distribution \\(p_i\\) (\\(i=0, 1, 2, \\dots, p_\\mathrm{max}\\)), where \\(i\\) is the number of days after infection that the observation happens, then the number of observable outcomes \\(C_t\\) on day \\(t\\) is given by\n\\[\nC_t = \\sum_{i=0}^{i=p_\\mathrm{max}} I_{t-i} p_i\n\\]\nIn words, the number of observable outcomes on day \\(t\\) is given by the sum of infections on all previous days multiplied by the probability that those infections are observed on day \\(t\\). For example, the observable outcomes \\(C_t\\) could be the number of symptom onsets on day \\(t\\) and \\(p_i\\) is the incubation period.\nWe can use the same data as in the session on biases in delay distributions, but this time we first aggregate this into a daily time series of infections:\n\n## Load data\ndata(infection_times)\n## Censor infection times to days\ndf &lt;- infection_times |&gt;\n  transmute(infection_day = floor(infection_time))\n\n## Summarise infections as a time series by day\ninf_ts &lt;- df |&gt;\n  count(infection_day, name = \"infections\")\nhead(inf_ts)\n\n  infection_day infections\n1             0          1\n2             2          1\n3             4          2\n4             5          1\n5             6          1\n6             7          1\n\n## fill data frame with zeroes for days without infection\nall_days &lt;- expand(\n  df, infection_day = seq(min(infection_day), max(infection_day))\n)\ninf_ts &lt;- all_days |&gt;\n  full_join(inf_ts, by = join_by(infection_day)) |&gt;\n  replace_na(list(infections = 0))\nhead(inf_ts)\n\n# A tibble: 6 × 2\n  infection_day infections\n          &lt;dbl&gt;      &lt;int&gt;\n1             0          1\n2             1          0\n3             2          1\n4             3          0\n5             4          2\n6             5          1\n\n\n\n\n\n\n\n\nNote\n\n\n\nThe second part of the code snippet above is used to add days without infections with a zero count. This will make our calculations easier later (as otherwise we would have to try and detect these in any models that used this data which could be complicated).\n\n\nNow we can convolve the time series with a delay distribution to get a time series of outcomes as suggested above.\n\nDiscretising a delay distribution\nIn our first session, we decided to assume the delay from infection to symptom onset had a gamma distribution. However, if we want to use the gamma distribution with shape 5 and rate 1 as before, we face a familiar issue. The gamma distribution is a continuous distribution, but now our delay data are in days which are discrete entities. Before we can simulate a time series of symptom onsets, we will first need to generate a discrete probability mass function of the incubation period (in days).\nWe do so by generating many replicates of the corresponding random delay, taking into account that we have already rounded down our infection times to infection days. In the absence of any other information or model, we assume for our simulation that infection occurred at some random time during the day, with each time equally likely. We can then apply the incubation period using a continuous probability distribution, before once again rounding down to get the day of symptom onset. We repeat this many times to get the probability mass function that allows us to go from infection days to symptom onset days:\n\n## function that takes two inputs to discretise a continuous delay distribution\n##\n## function arguments:\n## rgen: a function that generates random delays, e.g. rgamma, rlognormal\n## n: the number of replicates to simulate\n## max: the maximum delay\n## ...: parameters of the delay distribution\n## the function returns a vector of probabilities, corresponding to discrete\n## indices 0, 1, 2 of the discretised delay distribution\n##\n## example: censored_delay_pmf(rgen = rgamma, max = 14, shape = 5, rate = 1)\ncensored_delay_pmf &lt;- function(rgen, max, n = 1e+6, ...) {\n  ## first, simulate exact time of first event (given by day), uniformly\n  ## between 0 and 1\n  first &lt;- runif(n, min = 0, max = 1)\n  ## now,  simulate the exact time of the second event\n  second &lt;- first + rgen(n, ...)\n  ## round down to get the delay in days\n  delay &lt;- floor(second)\n  ## get vector of counts\n  counts &lt;- table(factor(delay, levels = seq(0, max)))\n  ## normalise to get pmf\n  pmf &lt;- counts / sum(counts)\n  ## return\n  return(pmf)\n}\n\n\n\n\n\n\n\nTake 5 minutes\n\n\n\nTry to understand the censored_delay_pmf() function above. Try it with a few different probability distributions and parameters, e.g. for the parameters given above and a maximum delay of 2 weeks (14 days) it would be:\n\ngamma_pmf &lt;- censored_delay_pmf(rgamma, max = 14, shape = 5, rate = 1)\ngamma_pmf\n\n\n           0            1            2            3            4            5 \n0.0006728431 0.0212215907 0.0904333129 0.1637932329 0.1913868077 0.1741852541 \n           6            7            8            9           10           11 \n0.1342341954 0.0920152952 0.0580847802 0.0343750720 0.0193722735 0.0105722470 \n          12           13           14 \n0.0055219190 0.0027654651 0.0013657112 \n\n# plot the probabilities corresponding to each discretised days' delay\nplot(gamma_pmf)\n\n\n\n\n\n\n\n\n\n\n\n\nApplying a convolution\nNext we apply a convolution with the discretised incubation period distribution to the time series of infections, to generate a time series of symptom onsets.\n\n## function that takes two inputs to convolve a time series with a delay\n##\n## function arguments:\n## ts: vector of the time series to convolve\n## delay: the probability mass function of the delay, given as a vector of\n## probabilities, corresponding to discrete indices 0, 1, 2 of the discretised\n## delay distribution\n##\n## example: convolve_with_delay(ts = c(10, 14, 10, 10), delay_pmf = c(0.1, 0.6, 0.3))\nconvolve_with_delay &lt;- function(ts, delay_pmf) {\n  max_delay &lt;- length(delay_pmf) - 1 ## subtract one because zero-indexed\n  convolved &lt;- vapply(seq_along(ts), \\(i) {\n    ## get vector of infections over the possible window of the delay period\n    first_index &lt;- max(1, i - max_delay)\n    ts_segment &lt;- ts[seq(first_index, i)]\n    ## take reverse of pmf and cut if needed\n    pmf &lt;- rev(delay_pmf)[seq_len(i - first_index + 1)]\n    ## convolve with delay distribution\n    ret &lt;- sum(ts_segment * pmf)\n    return(ret)\n  }, numeric(1))\n  return(convolved)\n}\n\n\n\n\n\n\n\nTake 5 minutes\n\n\n\nTry to understand the convolve_with_delay() function above. Try it with a few different time series and delay distributions. How would you create the time series of symptom onsets from infections, using the discretised gamma distribution created above (saved in gamma_pmf)?\n\n\n\n\n\n\n\n\nSolution\n\n\n\n\n\n\nonsets &lt;- convolve_with_delay(inf_ts$infections, gamma_pmf)\n\n\n\n\nWe can plot these symptom onsets:\n\ncombined &lt;- inf_ts |&gt;\n  rename(time = infection_day) |&gt;\n  mutate(onsets = onsets)\nggplot(combined, aes(x = time, y = onsets)) +\n  geom_bar(stat = \"identity\")\n\n\n\n\n\n\n\n\nDo they look similar to the plot of symptom onsets in the session on delay distributions?",
+    "crumbs": [
+      "Using delay distributions to model the data generating process"
+    ]
+  },
+  {
+    "objectID": "sessions/using-delay-distributions-to-model-the-data-generating-process-of-an-epidemic.html#observation-uncertainty",
+    "href": "sessions/using-delay-distributions-to-model-the-data-generating-process-of-an-epidemic.html#observation-uncertainty",
+    "title": "Using delay distributions to model the data generating process",
+    "section": "Observation uncertainty",
+    "text": "Observation uncertainty\nUsually not all data are perfectly observed. Also, the convolution we applied is a deterministic operation that brushes over the fact that individual delays are random. We should therefore find another way to model the variation these processes introduce.\nGiven that we are now dealing with count data a natural choice is the Poisson distribution. We can use this to generate uncertainty around our convolved data.\n\ncombined &lt;- combined |&gt;\n  mutate(observed = rpois(n(), onsets))\n\n\n\n\n\n\n\nTake 5 minutes\n\n\n\nDoes a plot of these observations look more like the plots from the session on delay distributions than the convolution plotted above?\n\n\n\n\n\n\n\n\nSolution\n\n\n\n\n\n\nggplot(combined, aes(x = time, y = observed)) +\n  geom_bar(stat = \"identity\")",
+    "crumbs": [
+      "Using delay distributions to model the data generating process"
+    ]
+  },
+  {
+    "objectID": "sessions/forecasting-concepts.html",
+    "href": "sessions/forecasting-concepts.html",
+    "title": "Forecasting concepts",
+    "section": "",
+    "text": "Objectives\nThe aim of this session is to introduce the concept of forecasting, using a simple model, and forecasting evaluation.\n\n\nLibraries used\nIn this session we will use the nfidd package to load the data set of infection times, the dplyr and tidyr packages for data wrangling, ggplot2 library for plotting, the here library to find the stan model, and the cmdstanr library for using stan. We will also use the tidybayes package for extracting results of the inference.\n\nlibrary(\"nfidd\")\nlibrary(\"dplyr\")\nlibrary(\"tidyr\")\nlibrary(\"ggplot2\")\nlibrary(\"here\")\nlibrary(\"cmdstanr\")\nlibrary(\"tidybayes\")\n\n\n\n\n\n\n\nTip\n\n\n\nThe code in this session can be run as an interactive notebook using RStudio, or copied-and-pasted into an R session. It needs to be run inside the course repository so that the here() commands below find the stan model files.\n\n\n\n\nGoing further\n\n\nWrap up",
+    "crumbs": [
+      "Forecasting concepts"
+    ]
+  },
+  {
+    "objectID": "sessions/R-estimation-and-the-renewal-equation.html",
+    "href": "sessions/R-estimation-and-the-renewal-equation.html",
+    "title": "R estimation and the renewal equation",
+    "section": "",
+    "text": "Introduction to the reproduction number\n\nObjectives\nThe aim of this session is to introduce the renewal equation as an infection generating process, and to show how it can be used to estimate a time-varying reproduction number.\n\n\nLibraries used\nIn this session we will use the nfidd package to load the data set of infection times, the dplyr and tidyr packages for data wrangling, ggplot2 library for plotting, the here library to find the stan model, and the cmdstanr library for using stan. We will also use the tidybayes package for extracting results of the inference.\n\nlibrary(\"nfidd\")\nlibrary(\"dplyr\")\nlibrary(\"tidyr\")\nlibrary(\"ggplot2\")\nlibrary(\"here\")\nlibrary(\"cmdstanr\")\nlibrary(\"tidybayes\")\n\n\n\n\n\n\n\nTip\n\n\n\nThe code in this session can be run as an interactive notebook using RStudio, or copied-and-pasted into an R session. It needs to be run inside the course repository so that the here() commands below find the stan model files.\n\n\n\n\nThe renewal equation as a process model for infectious diseases\nIn this session we introduce modelling the infection process itself, in addition to modelling observation processes.\nRecall that in the session on convolutions we tried to estimate the number of infections. In doing so we assumed that infections every day were independently identically distributed and determined only by the number of symptom onsets that they caused. In reality, however, we know that infections are not independent. Because infection is dependent on a pathogen being transmitted from one individual to another, we expect infections on any day to depend on existing infections, that is the number of individuals that became infectious in the recent past. We know express this relationship via the renewal equation, which links these recent infections to the number of new infections expected on any day via the reproduction number \\(R\\).\nRemember that this is a more general concept than the basic reproduction number \\(R_0\\) which represents the average number of secondary infections caused by a single infectious individual in a completely susceptible population. The reproduction number \\(R\\) (sometimes called the effective reproduction number) *more generally describes the average number of secondary infections caused by a single infectious individual and can in time and space as a function of differences in population level susceptibility, changes in behaviour, policy, seasonality etc.\nIn most mechanistic models of infectious diseases (starting with the simplest SIR model), $ arises out of a combination of parameters and variables representing the system state, for example in a simple SIR model it can be calculated as \\(R_0 S/N\\) where \\(S\\) is the current number of susceptibles in the population of size \\(N\\). By fitting such models to data it is then possible to calculate the value of \\(R\\) at any point in time. The renewal equation represents a more general model which includes the SIR model as a special case. In its basic form it makes no assumption about the specific processes that cause \\(R\\) to have a certain value and/or change over time, but instead it only relates the number of infected people in the population, the current value of the reproduction number and a delay distribution that represents the timings of when individuals infect others relative to when they themselves became infected, the so-called generation time. Mathematically, it can be written as\n\\[\nI_t = R_t \\sum_{i=1}^{g_\\mathrm{max}} I_{t-i} g_i\n\\]\nHere, \\(I_t\\) is the number of infected individuals on day \\(t\\), \\(R_t\\) is the current value of the reproduction number and \\(g_i\\) is the probability of a secondary infection occurring \\(i\\) days after the infector became infected themselves, with a maximum \\(g_\\mathrm{max}\\). Remembering the session on convolutions you will be able to identify that the renewal equation represents a convolution of the infection time series with itself, with the delay distribution given by \\(g_i\\) and \\(R_t\\) representing a scaling that is being applied.\n\n\n\n\n\n\nDiscrete vs. continuous renewal equation\n\n\n\nThe equation shown above represents the discrete version of the reproduction number. Similar to discussions in the session on convolutions this can be interpreted as a discretised version of a continuous one where the sum is replaced by an integral and the generation time distribution is continuous. Note that in the discrete version we have started the sum at 1 and thus set \\(g_0=0\\) which will make calculations easier.\n\n\n\n\n\n\n\n\nInstantaneous vs. case reproduction number\n\n\n\nThere are different definitions of the reproduction number that can be applied to the situation where it changes in time. As it is defined above it is also called the instantaneous reproduction number because any change affects all currently infectious individual instantaneously. Another example of a definition is the case reproduction number, where changes affect individuals at the time that they are infected but then they have a constant reproduction number throughout their infectious period.\n\n\n\n\n\n\n\n\nStochastic vs. deterministic renewal equation\n\n\n\nThe version of the discrete renewal equation we wrote above is deterministic, i.e. knowing the number of infections up to a certain time point and the reproduction number we can work out exactly how many new infections we will see. Sometimes stochasticity is added where the equation above gives the expectation of \\(I_t\\) but there exists random variation around it. In this course we will only deal with the deterministic renewal equation.\n\n\n\n\nSimulating an epidemic using the renewal equation\nWith the theory out of the way we now turn to simulating an epidemic using the renewal equation. We first write a function to simulate the epidemic using the discrete renewal equation.\n\n## function that takes three inputs to simulate using the renewal equation\n##\n## function arguments:\n## I0: the initial number of infections\n## R: the reproduction number, given as a vector with one entry per time point\n## gen_time: the generation time distribution, given as a vector with one entry\n## per day after infection (the first element corresponding to one day after\n## infection)\n##\n## example: renewal(I0 = 5, R = c(rep(3, 4), rep(0.5, 5)), gen_time = c(0.1, 0.2, 0.3, 0.2, 0.1))\nrenewal &lt;- function(I0, R, gen_time) {\n  ## set the maximum generation time\n  max_gen_time &lt;- length(gen_time)\n  ## number of time points\n  times &lt;- length(R)\n  I &lt;- c(I0, rep(0, times)) ## set up vector holding number of infected\n  ## iterate over time points\n  for (t in 1:times) {\n    ## calculate convolution\n    first_index &lt;- max(1, t - max_gen_time + 1)\n    I_segment &lt;- I[seq(first_index, t)]\n    ## iterate over generation times\n    ## take reverse of pmf and reverse if needed\n    gen_pmf &lt;- rev(gen_time[seq_len(t - first_index + 1)])\n    ## convolve infections with generation time\n    I[t + 1] &lt;- sum(I_segment * gen_pmf) * R[t]\n  }\n  return(I[-1]) ## remove I0 from time series\n}\n\n\n\n\n\n\n\nTake 10 minutes\n\n\n\nTry to understand the renewal() function above. Compare it to the convolve_with_delay() function from the session on convolutions. How are they similar? Can you explain the key differences between the two? Try calling the function with a few different probability distributions and parameters. What kind of behaviours do you see depending on the values you put in?\n\n\n\n\nEstimating R from a time series of infections\nWe now return to the time series of infections we used in the session on convolutions.\n\nsource(here::here(\"snippets\", \"load-ts.r\"))\n\nWe use a renewal equation model in stan to estimate the effective reproduction number throughout the outbreak. We assume that the generation time is gamma-distributed with mean 4 and standard deviation 2, with a maximum of 2 weeks (14 days). From this we can calculate that the parameters of the distribution are shape 4 and rate 1. We can use the censored_delay_pmf() function defined in the session on convolutions to use this continuous distribution with the discrete renewal equation. If you don’t have this available any more, you can load it using\n\nsource(here(\"functions\", \"censored-delay-pmf.r\"))\n\nTo approximate the generation time PMF using random draws from the underlying continuous distribution use\n\ngen_time_pmf &lt;- censored_delay_pmf(rgamma, max = 14, shape = 4, rate = 1)\n\nThe discrete renewal equation is only valid for generation times greater than 0 so we remove the first element of the pmf and re-normalise:\n\ngen_time_pmf &lt;- gen_time_pmf[-1] ## remove first element\ngen_time_pmf &lt;- gen_time_pmf / sum(gen_time_pmf) ## renormalise\n\nAs always we first load the stan model and spend some time trying to understand it.\n\nmod &lt;- cmdstan_model(here(\"stan\", \"estimate-r.stan\"))\nmod$print(line_numbers = TRUE)\n\n 1: functions {\n 2:   #include \"functions/renewal.stan\"\n 3: }\n 4: \n 5: data {\n 6:   int n;                // number of days\n 7:   int I0;              // number initially infected\n 8:   array[n] int obs;     // observed infections\n 9:   int gen_time_max;     // maximum generation time\n10:   array[gen_time_max] real gen_time_pmf;  // pmf of generation time distribution\n11: }\n12: \n13: parameters {\n14:   array[n] real&lt;lower = 0&gt; R;\n15: }\n16: \n17: transformed parameters {\n18:   array[n] real infections = renewal(I0, R, gen_time_pmf);\n19: }\n20: \n21: model {\n22:   // priors\n23:   R ~ normal(1, 1) T[0, ];\n24:   obs ~ poisson(infections);\n25: }\n\n\n\n\n\n\n\n\nTake 5 minutes\n\n\n\nFamiliarise yourself with the model above. Again there is a functions block at the beginning of the model (lines 1-3), where we load a function called renewal() (line 2) from a file of the same name which can be found in the subdirectory functions of the stan directory or viewed on the github repo. The functions correspond exactly to our earlier R function of the same name. Later, this functions is called in the model block, to generate the time series of infections using the discretised renewal model (line 19). Which line defines priors, and which the likelihood?\n\n\n\n\n\n\n\n\nSolution\n\n\n\n\n\nLine 24 defines the prior distribution of R at each time point, and Line 25 defines the likelihood using Poisson observation uncertainty.\n\n\n\nOnce again we can generate estimates from this model:\n\ndata &lt;- list(\n  n = nrow(inf_ts) - 1,\n  obs = inf_ts$infections[-1],\n  I0 = inf_ts$infections[1],\n  gen_time_max = length(gen_time_pmf),\n  gen_time_pmf = gen_time_pmf\n)\nr_fit &lt;- mod$sample(\n  data = data, refresh = ifelse(interactive(), 50, 0), show_exceptions = FALSE, show_messages = FALSE\n)\nr_fit\n\n variable   mean median   sd  mad     q5    q95 rhat ess_bulk ess_tail\n     lp__ 894.47 894.93 7.08 7.01 882.40 905.27 1.00     1610     2548\n     R[1]   1.39   1.30 0.82 0.87   0.22   2.86 1.00     3031     1475\n     R[2]   2.02   1.97 0.78 0.79   0.79   3.40 1.00     4080     2243\n     R[3]   1.46   1.41 0.80 0.85   0.27   2.87 1.00     2286     1259\n     R[4]   2.19   2.15 0.79 0.82   0.95   3.56 1.00     3969     2162\n     R[5]   1.80   1.76 0.75 0.77   0.62   3.09 1.00     3657     1597\n     R[6]   1.73   1.69 0.74 0.76   0.58   3.02 1.00     3355     1803\n     R[7]   1.68   1.61 0.75 0.77   0.55   3.02 1.00     3495     1572\n     R[8]   1.63   1.59 0.73 0.75   0.52   2.91 1.00     3710     1839\n     R[9]   1.60   1.54 0.73 0.74   0.52   2.89 1.00     3866     2050\n\n # showing 10 of 179 rows (change via 'max_rows' argument or 'cmdstanr_max_rows' option)\n\n\nOnce stan has run its chains, we can visualise the estimates:\n\n# Extract posterior draws\nr_posterior &lt;- r_fit |&gt;\n  gather_draws(R[infection_day]) |&gt;\n  group_by(infection_day) |&gt;\n  summarise(\n    median = median(.value),\n    lower = quantile(.value, 0.05),\n    upper = quantile(.value, 0.95),\n    .groups = \"drop\"\n  ) |&gt;\n  mutate(infection_day = infection_day - 1)\n\n\nggplot(\n  data = r_posterior,\n  aes(x = infection_day, y = median, ymin = lower, ymax = upper)\n) +\n  geom_line() +\n  geom_ribbon(alpha = 0.25, colour = NA)\n\n\n\n\n\n\n\n\n\n\n\n\n\n\nTake 10 minutes\n\n\n\nSimulate from the renewal equation using the renewal() R function we defined above with a given R trajectory. For example, you could look at R increasing steadily, or suddenly, or having any other trajectory you might imagine. Use the stan model to infer the trajectory of the reproduction number from the resulting time series of infection. Does the model reproduce the simulated R trajectories?\n\n\n\n\nEstimating R from a time series of symptom onsets\nEpidemiological data is rarely, perhaps never, available as a time series of infection events. Instead, we usually observe outcomes such as symptom onsets when individuals interact with the health system, e.g. by presenting to a hospital. In the session on convolutions we simulated symptom onsets from a time series of infections by convolving with a delay and then sampling from a Poisson distribution:\n\nsource(here::here(\"functions\", \"convolve-with-delay.r\"))\nip_pmf &lt;- censored_delay_pmf(rgamma, max = 14, shape = 5, rate = 1)\nonsets &lt;- convolve_with_delay(inf_ts$infections, ip_pmf)\nobs &lt;- rpois(length(onsets), onsets)\n\nWe now add this to our renewal equation model:\n\nmod &lt;- cmdstan_model(here(\"stan\", \"estimate-inf-and-r.stan\"))\nmod$print(line_numbers = TRUE)\n\n 1: functions {\n 2:   #include \"functions/convolve_with_delay.stan\"\n 3:   #include \"functions/renewal.stan\"\n 4: }\n 5: \n 6: data {\n 7:   int n;                // number of days\n 8:   int I0;              // number initially infected\n 9:   array[n] int obs;     // observed symptom onsets\n10:   int gen_time_max;     // maximum generation time\n11:   array[gen_time_max] real gen_time_pmf;  // pmf of generation time distribution\n12:   int&lt;lower = 1&gt; ip_max; // max incubation period\n13:   array[ip_max + 1] real ip_pmf;\n14: }\n15: \n16: parameters {\n17:   array[n] real&lt;lower = 0&gt; R;\n18: }\n19: \n20: transformed parameters {\n21:   array[n] real infections = renewal(I0, R, gen_time_pmf);\n22:   array[n] real onsets = convolve_with_delay(infections, ip_pmf);\n23: }\n24: \n25: model {\n26:   // priors\n27:   R ~ normal(1, 1) T[0, ];\n28:   obs ~ poisson(onsets);\n29: }\n\n\n\n\n\n\n\n\nTake 5 minutes\n\n\n\nFamiliarise yourself with the model above. Compare it to the model used earlier in this session, and the one used in the session on convolutions. Does this model have more parameters? How do the assumptions about the infections time series differ between the models?\n\n\nWe then generate estimates from this model:\n\ndata &lt;- list(\n  n = length(onsets) - 1,\n  obs = onsets[-1],\n  I0 = inf_ts$infections[1],\n  gen_time_max = length(gen_time_pmf),\n  gen_time_pmf = gen_time_pmf,\n  ip_max = length(ip_pmf) - 1,\n  ip_pmf = ip_pmf\n)\nr_inf_fit &lt;- mod$sample(\n  data = data, refresh = ifelse(interactive(), 50, 0), show_exceptions = FALSE, show_messages = FALSE, parallel_chains = 4\n)\n\nWarning: A non-integer value was supplied for 'obs'! It will be truncated to an\ninteger.\n\nr_inf_fit\n\n variable   mean median   sd  mad     q5    q95 rhat ess_bulk ess_tail\n     lp__ 800.12 800.29 7.65 7.72 787.19 812.07 1.00     1200     1930\n     R[1]   1.36   1.29 0.82 0.87   0.18   2.82 1.00     2742     1444\n     R[2]   1.47   1.42 0.82 0.86   0.25   2.93 1.00     2414     1252\n     R[3]   1.56   1.50 0.81 0.83   0.31   3.01 1.00     2996     1190\n     R[4]   1.55   1.50 0.83 0.87   0.24   2.97 1.00     2582     1196\n     R[5]   1.56   1.52 0.84 0.89   0.26   3.00 1.00     2529     1276\n     R[6]   1.56   1.52 0.82 0.85   0.28   2.99 1.00     2683     1243\n     R[7]   1.54   1.50 0.81 0.84   0.25   2.96 1.00     1973      875\n     R[8]   1.58   1.53 0.81 0.83   0.33   2.99 1.00     3145     1421\n     R[9]   1.54   1.50 0.82 0.87   0.26   2.96 1.00     2250      874\n\n # showing 10 of 268 rows (change via 'max_rows' argument or 'cmdstanr_max_rows' option)\n\n\nWe can visualise the posteriors in the same way as earlier here and in the session on convolutions. For example one could do\n\n# To avoid repeating overselves we have put the code to extract the posteriors in a function\nsource(here::here(\"functions\", \"extract-R-posteriors.r\"))\nposteriors &lt;- r_inf_fit |&gt;\n  extract_R_posteriors()\n\nThis time we extracted both the infections and R variables by infection day. We again use this to visualise infections compared to the data used to generate the time series of onsets\n\ninf_posterior &lt;- posteriors |&gt;\n  filter(.variable == \"infections\")\nggplot(mapping = aes(x = infection_day)) +\n  geom_line(data = inf_ts, mapping = aes(y = infections)) +\n  geom_ribbon(\n    data = inf_posterior,\n    mapping = aes(ymin = lower, ymax = upper), alpha = 0.25, colour = NA\n  )\n\n\n\n\n\n\n\n\nand reproduction numbers\n\nr_inf_posterior &lt;- posteriors |&gt;\n  filter(.variable == \"R\")\nggplot(mapping = aes(x = infection_day)) +\n  geom_ribbon(\n    data = r_inf_posterior,\n    mapping = aes(ymin = lower, ymax = upper), alpha = 0.25, colour = NA\n  )\n\n\n\n\n\n\n\n\n\n\nImproving the generative model for the reproduction number\nIn the model so far we have assumed that the reproduction number at any time point is independent of the reproduction number at any other time point. This assumption has resulted in the quite noisy estimates of the reproduction number that we have seen in the plots above.\nIn reality, we might expect the reproduction number to change more smoothly over time (except in situations of drastic change such as a very effective intervention) and to be more similar at adjacent time points. We can model this by assuming that the reproduction number at time \\(t\\) is a random draw from a normal distribution with mean equal to the reproduction number at time \\(t-1\\) and some standard deviation \\(\\sigma\\). This can be described as as a random walk model for the reproduction number. In fact, rather than using this model directly, a better choice might be to use a model where the logarithm of the reproduction number does a random walk, as this will ensure that the reproduction number is always positive and that changes are multiplicative rather than additive (i.e as otherwise the same absolute change in the reproduction number would have a larger effect when the reproduction number is small which likely doesn’t match your intuition for how outbreaks evolve over time). We can write this model as\n\\[\n\\sigma \\sim HalfNormal(0, 0.05) \\\\\n\\] \\[\n\\log(R_0) \\sim \\mathcal{Lognormal}(-0.1, 0.5)\n\\] \\[\n\\log(R_t) \\sim \\mathcal{N}(\\log(R_{t-1}), \\sigma)\n\\]\nHere we have placed a prior on the standard deviation of the random walk, which we have assumed to be half-normal (i.e., normal but restricted to being non-negative) with a mean of 0 and a standard deviation of 0.05. This is a so-called weakly informative prior that allows for some variation in the reproduction number over time but not an unrealistic amount. We have also placed a prior on the initial reproduction number, which we have assumed to be log-normally distributed with a mean of -0.1 and a standard deviation of 0.5. This is a weakly informative prior that allows for a wide range of initial reproduction numbers but has a mean of approximately 1.\nWe can now include this in a stan model,\n\nrw_mod &lt;- cmdstan_model(here(\"stan\", \"estimate-inf-and-r-rw.stan\"))\nrw_mod$print(line_numbers = TRUE)\n\n 1: functions {\n 2:   #include \"functions/convolve_with_delay.stan\"\n 3:   #include \"functions/renewal.stan\"\n 4:   #include \"functions/geometric_random_walk.stan\"\n 5: }\n 6: \n 7: data {\n 8:   int n;                // number of days\n 9:   int I0;              // number initially infected\n10:   array[n] int obs;     // observed symptom onsets\n11:   int gen_time_max;     // maximum generation time\n12:   array[gen_time_max] real gen_time_pmf;  // pmf of generation time distribution\n13:   int&lt;lower = 1&gt; ip_max; // max incubation period\n14:   array[ip_max + 1] real ip_pmf;\n15:   int h;                // number of days to forecast\n16: }\n17: \n18: transformed data {\n19:    int m = n + h;\n20: }\n21: \n22: parameters {\n23:   real init_R;         // initial reproduction number\n24:   array[m-1] real rw_noise;       // random walk noise\n25:   real&lt;lower = 0&gt; rw_sd; // random walk standard deviation\n26: }\n27: \n28: transformed parameters {\n29:   array[m] real R = geometric_random_walk(init_R, rw_noise, rw_sd);\n30:   array[m] real infections = renewal(I0, R, gen_time_pmf);\n31:   array[m] real onsets = convolve_with_delay(infections, ip_pmf);\n32: }\n33: \n34: model {\n35:   // priors\n36:   init_R ~ normal(-.1, 0.5); // Approximately Normal(1, 0.5)\n37:   rw_noise ~ std_normal();\n38:   rw_sd ~ normal(0, 0.05) T[0,];\n39:   obs ~ poisson(onsets[1:n]);\n40: }\n41: \n42: generated quantities {\n43:   array[h] real forecast;\n44:   if (h &gt; 0) {\n45:     for (i in 1:h) {\n46:       forecast[i] = poisson_rng(onsets[n + i]);\n47:     }\n48:   }\n49: }\n\n\nNote that the model is very similar to the one we used earlier, but with the addition of the random walk model for the reproduction number. See stan/functions/geometric_random_walk.stan for the geometric random walk function (note that here we use the non-centred parameterisation for efficiency).\nWe can now generate estimates from this model:\n\ndata &lt;- list(\n  n = length(onsets) - 1,\n  obs = onsets[-1],\n  I0 = inf_ts$infections[1],\n  gen_time_max = length(gen_time_pmf),\n  gen_time_pmf = gen_time_pmf,\n  ip_max = length(ip_pmf) - 1,\n  ip_pmf = ip_pmf,\n  h = 0 # this is a small easter egg for the attentive reader\n)\nr_rw_inf_fit &lt;- rw_mod$sample(\n  data = data, refresh = ifelse(interactive(), 50, 0), show_exceptions = FALSE, show_messages = FALSE,\n  parallel_chains = 4, max_treedepth = 12\n)\n\nWarning: A non-integer value was supplied for 'obs'! It will be truncated to an\ninteger.\n\n\nWarning: 23 of 4000 (1.0%) transitions ended with a divergence.\nSee https://mc-stan.org/misc/warnings for details.\n\nr_rw_inf_fit\n\n    variable   mean median   sd  mad     q5    q95 rhat ess_bulk ess_tail\n lp__        785.26 785.59 7.00 7.07 773.37 796.14 1.00     1599     2204\n init_R        0.34   0.35 0.17 0.16   0.06   0.59 1.00     4385     2365\n rw_noise[1]   0.16   0.19 0.98 0.99  -1.45   1.74 1.00     6965     3094\n rw_noise[2]   0.11   0.10 1.00 1.02  -1.52   1.75 1.00     7237     3045\n rw_noise[3]   0.13   0.12 0.98 0.97  -1.47   1.77 1.00     6083     2791\n rw_noise[4]   0.12   0.12 0.98 0.99  -1.54   1.73 1.00     6635     2831\n rw_noise[5]   0.14   0.14 0.98 0.98  -1.48   1.75 1.00     7474     2962\n rw_noise[6]   0.16   0.16 1.00 0.97  -1.49   1.81 1.00     7849     2536\n rw_noise[7]   0.16   0.16 1.02 1.00  -1.51   1.84 1.00     6905     2494\n rw_noise[8]   0.17   0.17 0.97 0.98  -1.43   1.78 1.00     7967     2728\n\n # showing 10 of 358 rows (change via 'max_rows' argument or 'cmdstanr_max_rows' option)\n\n\nWe can again extract and visualise the posteriors in the same way as earlier.\n\nrw_posteriors &lt;- r_rw_inf_fit |&gt;\n  extract_R_posteriors()\n\n\nrw_inf_posterior &lt;- rw_posteriors |&gt;\n  filter(.variable == \"infections\")\nggplot(mapping = aes(x = infection_day)) +\n  geom_line(data = inf_ts, mapping = aes(y = infections)) +\n  geom_ribbon(\n    data = rw_inf_posterior,\n    mapping = aes(ymin = lower, ymax = upper), alpha = 0.25, colour = NA\n  )\n\n\n\n\n\n\n\n\nand reproduction numbers\n\nrw_r_inf_posterior &lt;- rw_posteriors |&gt;\n  filter(.variable == \"R\")\nggplot(mapping = aes(x = infection_day)) +\n  geom_ribbon(\n    data = rw_r_inf_posterior,\n    mapping = aes(ymin = lower, ymax = upper), alpha = 0.25, colour = NA\n  )\n\n\n\n\n\n\n\n\n\n\n\n\n\n\nTake 10 minutes\n\n\n\nCompare the results across the models used in this session, and the one used in the session on convolutions. How do the models vary in the number of parameters that need to be estimated? How do the assumptions about the infections time series differ between the models? What do you notice about the level uncertainty in the estimates of infections and R over the course of the time series? If you have time you could try re-running the experiment with different R trajectories and delay distributions to see whether results change.\n\n\n\n\n\n\nSolution\n\n\n\n\n\nWe can see that using the renewal model as generative model we recover the time series of infections more accurately compared to previously when we assumed independent numbers of infections each day and that using a more believable model (i.e the geometric random walk) for the reproduction number improves things even more. Of course, this is helped by the fact that the data was generated by a model similar to the renewal model used for inference.\nComparing the R trajectories\n\nr_inf_posterior &lt;- r_inf_posterior |&gt;\n  select(-.variable) |&gt;\n  mutate(data = \"onsets (normal)\")\nrw_r_inf_posterior &lt;- rw_r_inf_posterior |&gt;\n  select(-.variable) |&gt;\n  mutate(data = \"onsets (random walk)\")\n\n## earlier posterior (see previous section)\nr_posterior &lt;- r_posterior |&gt;\n  mutate(data = \"infections\")\nall_posteriors &lt;- rbind(\n  r_inf_posterior,\n  rw_r_inf_posterior,\n  r_posterior\n)\n\nggplot(\n  all_posteriors,\n  mapping = aes(\n    x = infection_day, ymin = lower, ymax = upper, fill = data\n  )\n) +\n  geom_ribbon(alpha = 0.25, colour = NA) +\n  scale_fill_brewer(palette = \"Set1\")\n\n\n\n\n\n\n\n\nWe can see that the estimates are smoother when using the random walk model for the reproduction number, compared to the normal model. The model that fits directly to infections has the lowest uncertainty, which we would expect as it doesn’t have to infer the number of infections from symptom onsets but even here the reproduction number estimates are unrealistically noisy due to the assumption of independence between infections each day.\n\n\n\n\n\n\n\nGoing further\n\nWe have used symptom onsets under the assumption that every infected person develops symptoms. Earlier we also created a time series of hospitalisation under the assumption that only a proportion (e.g., 30%) of symptomatic individuals get hospitalised. How would you change the model in this case? What are the implications for inference?",
+    "crumbs": [
+      "R estimation and the renewal equation"
+    ]
+  },
+  {
+    "objectID": "sessions/ensemble-modelling.html",
+    "href": "sessions/ensemble-modelling.html",
+    "title": "Perspectives on forecasting",
+    "section": "",
+    "text": "Objectives\nThe aim of this session is to gain perspective on the evaluated forecasts, and to introduce the unreasonable success of ensemble modelling.\n\n\nGoing further",
+    "crumbs": [
+      "Perspectives on forecasting"
+    ]
+  },
+  {
+    "objectID": "sessions/from-line-list-to-estimates.html",
+    "href": "sessions/from-line-list-to-estimates.html",
+    "title": "From line list to estimates",
+    "section": "",
+    "text": "Objective\nThe aim of this session is to put what we have learnt so far into practice using a real line list. We will use the models we have created to produce delay distribution estimates, nowcasts, R estimation and forecasts.\n\n\nGoing further\n\n\nWrap up",
+    "crumbs": [
+      "From line list to estimates"
+    ]
+  },
+  {
+    "objectID": "sessions/slides/convolutions.html#individual-delays",
+    "href": "sessions/slides/convolutions.html#individual-delays",
+    "title": "Delay distributions at the population level",
+    "section": "Individual delays",
+    "text": "Individual delays\nIf \\(f(t)\\) is our delay distribution then\n\\[\np(y_i) = f(y_i - x_i)\n\\]\nis the probability that secondary event of individual \\(i\\) happens at time \\(y_i\\) given its primary event happened at \\(x_i\\)."
+  },
+  {
+    "objectID": "sessions/slides/convolutions.html#population-level-counts",
+    "href": "sessions/slides/convolutions.html#population-level-counts",
+    "title": "Delay distributions at the population level",
+    "section": "Population level counts",
+    "text": "Population level counts\nThe expected number of individuals \\(S_t\\) that have their secondary event at time \\(t\\) can then be calculated as the sum of these probabilities\n\\[\nS_t = \\sum_i f_{t - x_i}\n\\]\n\nNote: If \\(S_t\\) is in discrete time steps then \\(f_t\\) needs to be a discrete probability distribution."
+  },
+  {
+    "objectID": "sessions/slides/convolutions.html#population-level-counts-1",
+    "href": "sessions/slides/convolutions.html#population-level-counts-1",
+    "title": "Delay distributions at the population level",
+    "section": "Population level counts",
+    "text": "Population level counts\nIf the number of individuals \\(P_{t'}\\) that have their primary event at time \\(t'\\) then we can rewrite this as\n\\[\nS_t = \\sum_{t'} P_{t'} f_{t - t'}\n\\]\nThis operation is called a (discrete) convolution of \\(P\\) with \\(f\\).\nWe can use convolutions with the delay distribution that applies at the individual level to determine population-level counts."
+  },
+  {
+    "objectID": "sessions/slides/convolutions.html#example-infections-to-symptom-onsets",
+    "href": "sessions/slides/convolutions.html#example-infections-to-symptom-onsets",
+    "title": "Delay distributions at the population level",
+    "section": "Example: infections to symptom onsets",
+    "text": "Example: infections to symptom onsets"
+  },
+  {
+    "objectID": "sessions/slides/convolutions.html#why-use-a-convolution-not-individual-delays",
+    "href": "sessions/slides/convolutions.html#why-use-a-convolution-not-individual-delays",
+    "title": "Delay distributions at the population level",
+    "section": "Why use a convolution, not individual delays?",
+    "text": "Why use a convolution, not individual delays?\n\nwe don’t always have individual data available\ndoing the computation at the population level requires fewer calculations (i.e. is faster)\n\n\n\nhowever, we have lost uncertainty by focusing on the expectation"
+  },
+  {
+    "objectID": "sessions/slides/convolutions.html#what-if-f-is-continuous",
+    "href": "sessions/slides/convolutions.html#what-if-f-is-continuous",
+    "title": "Delay distributions at the population level",
+    "section": "What if \\(f\\) is continuous?",
+    "text": "What if \\(f\\) is continuous?\nHaving moved to the population level, we can’t estimate individual-level event times any more.\nInstead, we discretise the distribution. One way of doing so:\n\\[\nf_t \\propto F(t + 1) - F(t - 1)\n\\]\nwhere \\(F(t) = 0\\) for \\(t \\leq 0\\)."
+  },
+  {
+    "objectID": "sessions/slides/convolutions.html#your-turn",
+    "href": "sessions/slides/convolutions.html#your-turn",
+    "title": "Delay distributions at the population level",
+    "section": " Your Turn",
+    "text": "Your Turn\n\nSimulate convolutions with infection counts\nEstimate parameters numbers of infections from number of symptom onsets, using a convolution model\n\nReturn to the session\n\n\n\nDelay distributions at the population level"
+  },
+  {
+    "objectID": "sessions/slides/introduction-to-statistical-concepts.html#bayesian-inference-in-15-minutes",
+    "href": "sessions/slides/introduction-to-statistical-concepts.html#bayesian-inference-in-15-minutes",
+    "title": "Introduction to statistical concepts used in the course",
+    "section": "Bayesian inference in 15 minutes",
+    "text": "Bayesian inference in 15 minutes"
+  },
+  {
+    "objectID": "sessions/slides/introduction-to-statistical-concepts.html#bayesian-inference-in-15-minutes-1",
+    "href": "sessions/slides/introduction-to-statistical-concepts.html#bayesian-inference-in-15-minutes-1",
+    "title": "Introduction to statistical concepts used in the course",
+    "section": "Bayesian inference in 15 minutes",
+    "text": "Bayesian inference in 15 minutes\n\nIdea of Bayesian inference: treat \\(\\theta\\) as random variables (with a probability distribution) and condition on data: posterior probability \\(p(\\theta | \\mathrm{data})\\) as target of inference."
+  },
+  {
+    "objectID": "sessions/slides/introduction-to-reproduction-number.html#convolution-session",
+    "href": "sessions/slides/introduction-to-reproduction-number.html#convolution-session",
+    "title": "Introduction to the time-varying reproduction number",
+    "section": "Convolution session",
+    "text": "Convolution session\n\nfunctions {\n  #include \"functions/convolve_with_delay.stan\"\n}\n\ndata {\n  int n;            // number of time days\n  array[n] int obs; // observed onsets\n  int&lt;lower = 1&gt; ip_max; // max incubation period\n  // probability mass function of incubation period distribution (first index zero)\n  array[ip_max + 1] real ip_pmf;\n}\n\nparameters {\n  array[n] real&lt;lower = 0&gt; infections;\n}\n\ntransformed parameters {\n  array[n] real onsets = convolve_with_delay(infections, ip_pmf);\n}\n\nmodel {\n  // priors\n  infections ~ normal(0, 10) T[0, ];\n  obs ~ poisson(onsets);\n}\n\n\nPrior for infections at time \\(t\\) is independent from infections at all other time points. Is this reasonable?"
+  },
+  {
+    "objectID": "sessions/slides/introduction-to-reproduction-number.html#infections-depend-on-previous-infections",
+    "href": "sessions/slides/introduction-to-reproduction-number.html#infections-depend-on-previous-infections",
+    "title": "Introduction to the time-varying reproduction number",
+    "section": "Infections depend on previous infections",
+    "text": "Infections depend on previous infections\nRemember the definition of the generation time distribution \\(g(t)\\):\ninfection (person A) to infection (person B, infected by A)\nThrough this, infections depend on previous infections:\n\\[\nI_t = \\mathrm{scaling} \\times \\sum_{t' &lt; t} I_t' g(t - t')\n\\]\nWhat is this scaling?"
+  },
+  {
+    "objectID": "sessions/slides/introduction-to-reproduction-number.html#scaling-of-infections-with-previous-infections",
+    "href": "sessions/slides/introduction-to-reproduction-number.html#scaling-of-infections-with-previous-infections",
+    "title": "Introduction to the time-varying reproduction number",
+    "section": "Scaling of infections with previous infections",
+    "text": "Scaling of infections with previous infections\nLet’s assume we have \\(I_0\\) infections at time 0, and the scaling doesn’t change in time.\nHow many people will they go on to infect?\n\n\\[\nI = \\mathrm{scaling} \\times \\sum_{t=0}^\\infty I_0 g(t) = \\mathrm{scaling} * I_0\n\\]\nThe scaling can be interpreted as the reproduction number \\(R\\)."
+  },
+  {
+    "objectID": "sessions/slides/introduction-to-reproduction-number.html#the-renewal-equation",
+    "href": "sessions/slides/introduction-to-reproduction-number.html#the-renewal-equation",
+    "title": "Introduction to the time-varying reproduction number",
+    "section": "The renewal equation",
+    "text": "The renewal equation\nIf \\(R_t\\) can change over time, it can still be interpreted as the (“instantaneous”) reproduction number:\n\\[\nI_t = R_t \\times \\sum_{t' &lt; t} I_t' g(t - t')\n\\]"
+  },
+  {
+    "objectID": "sessions/slides/introduction-to-reproduction-number.html#the-renewal-equation-as-convolution",
+    "href": "sessions/slides/introduction-to-reproduction-number.html#the-renewal-equation-as-convolution",
+    "title": "Introduction to the time-varying reproduction number",
+    "section": "The renewal equation as convolution",
+    "text": "The renewal equation as convolution"
+  },
+  {
+    "objectID": "sessions/slides/introduction-to-reproduction-number.html#the-time-varying-reproduction-number",
+    "href": "sessions/slides/introduction-to-reproduction-number.html#the-time-varying-reproduction-number",
+    "title": "Introduction to the time-varying reproduction number",
+    "section": "The time-varying reproduction number",
+    "text": "The time-varying reproduction number\nWe can estimate \\(R_t\\) from a time series of infections using the renewal equation.\nWhat are some other ways of estimating it?"
+  },
+  {
+    "objectID": "sessions/slides/introduction-to-reproduction-number.html#your-turn",
+    "href": "sessions/slides/introduction-to-reproduction-number.html#your-turn",
+    "title": "Introduction to the time-varying reproduction number",
+    "section": " Your Turn",
+    "text": "Your Turn\n\nSimulate infections using the renewal equation\nEstimate reproduction numbers using a time series of infections\nCombine with delay distributions to jointly infer infections and R from a time series of outcomes\n\nReturn to the session\n\n\n\nIntroduction to the time-varying reproduction number"
+  },
+  {
+    "objectID": "sessions/slides/introduction-to-epidemiological-delays.html#epidemiological-events-disease-progression",
+    "href": "sessions/slides/introduction-to-epidemiological-delays.html#epidemiological-events-disease-progression",
+    "title": "Introduction to epidemiological delays",
+    "section": "Epidemiological events: disease progression",
+    "text": "Epidemiological events: disease progression\n\ninfection\nsymptom onset\nbecoming infectious\nhospital admission\ndeath"
+  },
+  {
+    "objectID": "sessions/slides/introduction-to-epidemiological-delays.html#epidemiological-events-recovery",
+    "href": "sessions/slides/introduction-to-epidemiological-delays.html#epidemiological-events-recovery",
+    "title": "Introduction to epidemiological delays",
+    "section": "Epidemiological events: recovery",
+    "text": "Epidemiological events: recovery\n\npathogen clearance\nsymptoms clearance\nend of infectiousness\ndischarge from hospital"
+  },
+  {
+    "objectID": "sessions/slides/introduction-to-epidemiological-delays.html#epidemiological-events-control",
+    "href": "sessions/slides/introduction-to-epidemiological-delays.html#epidemiological-events-control",
+    "title": "Introduction to epidemiological delays",
+    "section": "Epidemiological events: control",
+    "text": "Epidemiological events: control\n\nquarantine\nisolation\ntreatment"
+  },
+  {
+    "objectID": "sessions/slides/introduction-to-epidemiological-delays.html#epidemiological-events-reporting",
+    "href": "sessions/slides/introduction-to-epidemiological-delays.html#epidemiological-events-reporting",
+    "title": "Introduction to epidemiological delays",
+    "section": "Epidemiological events: reporting",
+    "text": "Epidemiological events: reporting\n\nspecimen taken\nreport added to database"
+  },
+  {
+    "objectID": "sessions/slides/introduction-to-epidemiological-delays.html#some-delays-have-names",
+    "href": "sessions/slides/introduction-to-epidemiological-delays.html#some-delays-have-names",
+    "title": "Introduction to epidemiological delays",
+    "section": "Some delays have names",
+    "text": "Some delays have names\ninfection to symptom onset\n\nIncubation period"
+  },
+  {
+    "objectID": "sessions/slides/introduction-to-epidemiological-delays.html#some-delays-have-names-1",
+    "href": "sessions/slides/introduction-to-epidemiological-delays.html#some-delays-have-names-1",
+    "title": "Introduction to epidemiological delays",
+    "section": "Some delays have names",
+    "text": "Some delays have names\ninfection to becoming infectious\n\nLatent period"
+  },
+  {
+    "objectID": "sessions/slides/introduction-to-epidemiological-delays.html#some-delays-have-names-2",
+    "href": "sessions/slides/introduction-to-epidemiological-delays.html#some-delays-have-names-2",
+    "title": "Introduction to epidemiological delays",
+    "section": "Some delays have names",
+    "text": "Some delays have names\nbecoming infectious to end of infectiousness\n\nInfectious period"
+  },
+  {
+    "objectID": "sessions/slides/introduction-to-epidemiological-delays.html#some-delays-have-names-3",
+    "href": "sessions/slides/introduction-to-epidemiological-delays.html#some-delays-have-names-3",
+    "title": "Introduction to epidemiological delays",
+    "section": "Some delays have names",
+    "text": "Some delays have names\nhospital admission to discharge\n\nLength of stay"
+  },
+  {
+    "objectID": "sessions/slides/introduction-to-epidemiological-delays.html#some-delays-have-names-4",
+    "href": "sessions/slides/introduction-to-epidemiological-delays.html#some-delays-have-names-4",
+    "title": "Introduction to epidemiological delays",
+    "section": "Some delays have names",
+    "text": "Some delays have names\nsymptom onset (person A) to symptom onset (person B, infected by A)\n\nSerial interval"
+  },
+  {
+    "objectID": "sessions/slides/introduction-to-epidemiological-delays.html#some-delays-have-names-5",
+    "href": "sessions/slides/introduction-to-epidemiological-delays.html#some-delays-have-names-5",
+    "title": "Introduction to epidemiological delays",
+    "section": "Some delays have names",
+    "text": "Some delays have names\ninfection (person A) to infection (person B, infected by A)\n\nGeneration interval"
+  },
+  {
+    "objectID": "sessions/slides/introduction-to-epidemiological-delays.html#why-do-we-want-to-know-these",
+    "href": "sessions/slides/introduction-to-epidemiological-delays.html#why-do-we-want-to-know-these",
+    "title": "Introduction to epidemiological delays",
+    "section": "Why do we want to know these?",
+    "text": "Why do we want to know these?"
+  },
+  {
+    "objectID": "sessions/slides/introduction-to-epidemiological-delays.html#key-parameters-in-mathematical-models",
+    "href": "sessions/slides/introduction-to-epidemiological-delays.html#key-parameters-in-mathematical-models",
+    "title": "Introduction to epidemiological delays",
+    "section": "Key parameters in mathematical models",
+    "text": "Key parameters in mathematical models\n\nFerguson et al., 2020"
+  },
+  {
+    "objectID": "sessions/slides/introduction-to-epidemiological-delays.html#key-parameters-in-mathematical-models-1",
+    "href": "sessions/slides/introduction-to-epidemiological-delays.html#key-parameters-in-mathematical-models-1",
+    "title": "Introduction to epidemiological delays",
+    "section": "Key parameters in mathematical models",
+    "text": "Key parameters in mathematical models\n\nWard et al., 2020"
+  },
+  {
+    "objectID": "sessions/slides/introduction-to-epidemiological-delays.html#key-elements-of-infectious-disease-epidemiology",
+    "href": "sessions/slides/introduction-to-epidemiological-delays.html#key-elements-of-infectious-disease-epidemiology",
+    "title": "Introduction to epidemiological delays",
+    "section": "Key elements of infectious disease epidemiology",
+    "text": "Key elements of infectious disease epidemiology\n Nishiura et al., 2007"
+  },
+  {
+    "objectID": "sessions/slides/introduction-to-epidemiological-delays.html#why-do-we-want-to-know-these-1",
+    "href": "sessions/slides/introduction-to-epidemiological-delays.html#why-do-we-want-to-know-these-1",
+    "title": "Introduction to epidemiological delays",
+    "section": "Why do we want to know these?",
+    "text": "Why do we want to know these?\n\nKey elements of infectious disease epidemiology\nIntricate relationship with nowcasting/forecasting"
+  },
+  {
+    "objectID": "sessions/slides/introduction-to-epidemiological-delays.html#quantifying-delays",
+    "href": "sessions/slides/introduction-to-epidemiological-delays.html#quantifying-delays",
+    "title": "Introduction to epidemiological delays",
+    "section": "Quantifying delays",
+    "text": "Quantifying delays\n\nEpidemiological delays are variable\nWe can capture their variability using probability distributions"
+  },
+  {
+    "objectID": "sessions/slides/introduction-to-epidemiological-delays.html#warning-two-levels-of-uncertainty",
+    "href": "sessions/slides/introduction-to-epidemiological-delays.html#warning-two-levels-of-uncertainty",
+    "title": "Introduction to epidemiological delays",
+    "section": "Warning: Two levels of uncertainty",
+    "text": "Warning: Two levels of uncertainty\n\nProbability distributions characterise variability in the delays between individuals\nParameters of the probability distribution can be uncertain\n\n\n\n\\[\n\\alpha \\sim \\mathrm{Normal}(mean = 5, sd = 0.1) \\\\\n\\beta \\sim \\mathrm{Normal}(mean = 1, sd = 0.1) \\\\\n\\]\nShowing probability density functions of lognormal distributions with shape \\(\\alpha\\) and rate \\(\\beta\\)."
+  },
+  {
+    "objectID": "sessions/slides/introduction-to-epidemiological-delays.html#your-turn",
+    "href": "sessions/slides/introduction-to-epidemiological-delays.html#your-turn",
+    "title": "Introduction to epidemiological delays",
+    "section": " Your Turn",
+    "text": "Your Turn\n\nSimulate epidemiological delays\nEstimate parameters of a delay distribution\n\nReturn to the session\n\n\n\nIntroduction to epidemiological delays"
+  },
+  {
+    "objectID": "sessions/biases-in-delay-distributions.html",
+    "href": "sessions/biases-in-delay-distributions.html",
+    "title": "Biases in delay distributions",
+    "section": "",
+    "text": "Introduction to biases in epidemiological delays",
+    "crumbs": [
+      "Biases in delay distributions"
+    ]
+  },
+  {
+    "objectID": "sessions/biases-in-delay-distributions.html#load-data",
+    "href": "sessions/biases-in-delay-distributions.html#load-data",
+    "title": "Biases in delay distributions",
+    "section": "Load data",
+    "text": "Load data\nWe will use the same simulated data set as in the session on delay distributions.\n\n\n\n\n\n\nNote\n\n\n\nRemember, in this outbreak we are assuming:\n\nthe incubation period is gamma-distributed with shape 5 and rate 1, i.e. a mean of 5 days\nthe time from onset to hospital admission is lognormally-distributed, with meanlog 1.75 and sdlog 0.5, i.e. a mean delay of about a week\n\n\n\n\n\n\n\n\n\nTip\n\n\n\nIf you need to re-load the data, here is the code again from that session:\n\n# Load data\ndata(infection_times)\n\n### first, choose random delays\ndf &lt;- infection_times |&gt;\n  mutate(\n    onset_time = infection_time + rgamma(n(), shape = 5, rate = 1),\n    hosp_time = onset_time + rlnorm(n(), meanlog = 1.75, sdlog = 0.5)\n  )\n### next, set 70% of the hospitalization dates to NA because only 30∞ of cases\n### are hospitalized\ndf &lt;- df |&gt;\n  mutate(\n    hosp_time = if_else(\n      rbinom(n = n(), size = 1, p = 0.3) == 1,\n      hosp_time,\n      NA_real_\n    )\n  )",
+    "crumbs": [
+      "Biases in delay distributions"
+    ]
+  },
+  {
+    "objectID": "sessions/biases-in-delay-distributions.html#dates-not-days-censoring",
+    "href": "sessions/biases-in-delay-distributions.html#dates-not-days-censoring",
+    "title": "Biases in delay distributions",
+    "section": "Dates, not days: censoring",
+    "text": "Dates, not days: censoring\nData on health outcomes are usually not recorded in the way that we have used so far in this session: as a numeric time since a given start date. Instead, we usually deal with dates.\nWe can make our simulated dataset a bit more realistic by rounding down the infection times to an integer number.\n\n# Use the floor() function to round down to integers\ndf_dates &lt;- df |&gt;\n  mutate(\n    infection_time = floor(infection_time),\n    onset_time = floor(onset_time),\n    hosp_time = floor(hosp_time)\n  )\nhead(df_dates)\n\n  infection_time onset_time hosp_time\n1              0          7        NA\n2              2          7        12\n3              4          9        NA\n4              7         12        NA\n5              8         12        19\n6              4         12        NA\n\n\n\n\n\n\n\n\nNote\n\n\n\nAs before we are still not working with dates but numbers. This makes handling the data easier - we don’t have to make any conversions before using the data in stan.\n\n\nEach of the numbers now represent the number of days that have passed since the start of the outbreak. That is, each of the numbers correspond to a day. In that sense, the data is more like typical data we get from infectious disease outbreaks, where we would usually have a line list with key events such as symptom onset or death reported by a date. That is, the data is censored.",
+    "crumbs": [
+      "Biases in delay distributions"
+    ]
+  },
+  {
+    "objectID": "sessions/biases-in-delay-distributions.html#estimating-delay-distributions-accounting-for-censoring",
+    "href": "sessions/biases-in-delay-distributions.html#estimating-delay-distributions-accounting-for-censoring",
+    "title": "Biases in delay distributions",
+    "section": "Estimating delay distributions accounting for censoring",
+    "text": "Estimating delay distributions accounting for censoring\nLet’s estimate the time from symptom onset to hospitalisation with the censored data.\nA naïve approach to estimating the delay would be to ignore the fact that the data are censored. To estimate the delay from onset to hospitalisation, we could just use the difference between the censored times, which is an integer (the number of days).\n\ndf_dates &lt;- df_dates |&gt;\n  mutate(\n    incubation_period = onset_time - infection_time,\n    onset_to_hosp = hosp_time - onset_time\n  )\n\n\n\n\n\n\n\nTake 5 minutes\n\n\n\nFit the lognormal model used in the session on delay distributions to the estimates from the rounded data, i.e. using the df_dates data set.\nDo you still recover the parameters that we put in?\n\n\n\n\n\n\n\n\nSolution\n\n\n\n\n\n\nmod &lt;- cmdstan_model(here(\"stan\", \"lognormal.stan\"))\nres &lt;- mod$sample(\n  data = list(\n    n = nrow(na.omit(df_dates)),\n    y = na.omit(df_dates)$onset_to_hosp\n  ),\n  refresh = 0, show_exceptions = FALSE, show_messages = FALSE\n)\nres\n\n variable    mean  median   sd  mad      q5     q95 rhat ess_bulk ess_tail\n  lp__    -146.38 -146.07 1.01 0.72 -148.36 -145.43 1.00     1719     2567\n  meanlog    1.73    1.74 0.04 0.04    1.67    1.80 1.00     3294     2500\n  sdlog      0.53    0.53 0.03 0.03    0.49    0.58 1.00     2904     2520\n\n\nUsually the estimates will be further from the “true” parameters than before when we worked with the unrounded data.\n\n\n\nTo account for censoring, we need to modify the model to include the fact that we don’t know when exactly on any given day the event happened. For example, if we know that symptom onset of an individual occurred on 20 June, 2024, and they were admitted to hospital on 22 June, 2024, this could mean an onset-to-hospitalisation delay from 1 day (onset at 23:59 on the 20th, admitted at 0:01 on the 22nd) to 3 days (onset at 0:01 on the 20th, admitted at 23:59 on the 22nd).\nWe can use this in our delay estimation by making the exact time of the events based on the dates given part of the estimation procedure:\n\ncmod &lt;- cmdstan_model(here(\"stan\", \"censored_delay_model.stan\"))\ncmod$print(line_numbers = TRUE)\n\n 1: data {\n 2:   int&lt;lower = 0&gt; n;\n 3:   array[n] int&lt;lower = 1&gt; onset_to_hosp;\n 4: }\n 5: \n 6: parameters {\n 7:   real meanlog;\n 8:   real&lt;lower = 0&gt; sdlog;\n 9:   array[n] real&lt;lower = 0, upper = 1&gt; onset_day_time;\n10:   array[n] real&lt;lower = 0, upper = 1&gt; hosp_day_time;\n11: }\n12: \n13: transformed parameters {\n14:   array[n] real&lt;lower = 0&gt; true_onset_to_hosp;\n15:   for (i in 1:n) {\n16:     true_onset_to_hosp[i] =\n17:       onset_to_hosp[i] + hosp_day_time[i] - onset_day_time[i];\n18:   }\n19: }\n20: \n21: model {\n22:   meanlog ~ normal(0, 10);\n23:   sdlog ~ normal(0, 10) T[0, ];\n24:   onset_day_time ~ uniform(0, 1);\n25:   hosp_day_time ~ uniform(0, 1);\n26: \n27:   true_onset_to_hosp ~ lognormal(meanlog, sdlog);\n28: }\n\n\n\n\n\n\n\n\nTake 5 minutes\n\n\n\nFamiliarise yourself with the model above. Do you understand all the lines? Which line(s) define the parameter prior distribution(s), which one(s) the likelihood, and which one(s) reflect that we have now provided the delay as the difference in integer days?\n\n\n\n\n\n\n\n\nSolution\n\n\n\n\n\nLines 21-24 define the parametric prior distributions (for parameters meanlog and sdlog, and the estimates of exact times of events). Line 27 defines the likelihood. Lines 15-17 reflect the integer delays, adjusted by the estimated times of day.\n\n\n\nNow we can use this model to re-estimate the parameters of the delay distribution:\n\ncres &lt;- cmod$sample(\n  data = list(\n    n = nrow(na.omit(df_dates)),\n    onset_to_hosp = na.omit(df_dates)$onset_to_hosp\n  ),\n  refresh = 0, show_exceptions = FALSE, show_messages = FALSE\n)\ncres\n\n          variable     mean   median    sd   mad       q5      q95 rhat\n lp__              -1218.77 -1218.35 16.46 16.75 -1246.59 -1192.51 1.00\n meanlog               1.74     1.74  0.04  0.04     1.68     1.81 1.00\n sdlog                 0.51     0.51  0.03  0.03     0.47     0.56 1.00\n onset_day_time[1]     0.51     0.51  0.29  0.37     0.05     0.95 1.00\n onset_day_time[2]     0.52     0.52  0.29  0.37     0.05     0.96 1.00\n onset_day_time[3]     0.53     0.55  0.29  0.36     0.05     0.96 1.00\n onset_day_time[4]     0.51     0.52  0.29  0.36     0.06     0.95 1.00\n onset_day_time[5]     0.52     0.54  0.30  0.39     0.05     0.96 1.00\n onset_day_time[6]     0.53     0.54  0.29  0.37     0.06     0.95 1.00\n onset_day_time[7]     0.26     0.20  0.21  0.20     0.01     0.68 1.00\n ess_bulk ess_tail\n     1200     1719\n     8736     2718\n     6950     3166\n     8576     2475\n     7659     2347\n     7397     2016\n     8202     2416\n     6827     2084\n     8363     2222\n     6536     2075\n\n # showing 10 of 567 rows (change via 'max_rows' argument or 'cmdstanr_max_rows' option)\n\n\n\n\n\n\n\n\nTake 10 minutes\n\n\n\nTry re-simulating the delays using different parameters of the delay distribution. Can you establish under which conditions the bias in estimation gets worse?",
+    "crumbs": [
+      "Biases in delay distributions"
+    ]
+  },
+  {
+    "objectID": "sessions/biases-in-delay-distributions.html#real-time-estimation-truncation",
+    "href": "sessions/biases-in-delay-distributions.html#real-time-estimation-truncation",
+    "title": "Biases in delay distributions",
+    "section": "Real-time estimation: truncation",
+    "text": "Real-time estimation: truncation\nThe data set we have looked at so far in this session is a “final” data set representing an outbreak that has come and gone. However, information on delay distribution is often important during ongoing outbreaks as they can inform nowcasts and forecasts and help with broader interpretation of data.\nEstimating delays in real time comes with particular challenges, as the timing of the cut-off might introduce a bias. If, for example, infections are exponentially increasing then there will be disproportionately more people with recent symptom onset. Without adjustment, this would artificially decrease the estimate of the mean delay compared to its true value for all infections. This happens because most infections are recent (due to the exponential increase), but later symptom onsets amongst these have not had a chance to happen yet.\nOnce again, we can simulate this effect, for example by imagining we would like to make an estimate on day 40 of our outbreak. Let us work with the original, un-censored data for the time from onset to hospitalisation so as to look at the issue of truncation in isolation:\n\ndf_realtime &lt;- df |&gt;\n  mutate(onset_to_hosp = hosp_time - onset_time) |&gt;\n  filter(hosp_time &lt;= 40)",
+    "crumbs": [
+      "Biases in delay distributions"
+    ]
+  },
+  {
+    "objectID": "sessions/biases-in-delay-distributions.html#estimating-delay-distributions-accounting-for-truncation",
+    "href": "sessions/biases-in-delay-distributions.html#estimating-delay-distributions-accounting-for-truncation",
+    "title": "Biases in delay distributions",
+    "section": "Estimating delay distributions accounting for truncation",
+    "text": "Estimating delay distributions accounting for truncation\nIf we take the naïve mean of delays we get an underestimate as expected:\n\n# truncated mean delay\nmean(df_realtime$onset_to_hosp)\n\n[1] 5.795992\n\n# compare with the mean delay over the full outbreak\nmean(df$hosp_time - df$onset_time, na.rm=TRUE)\n\n[1] 6.444961\n\n\n\n\n\n\n\n\nTake 5 minutes\n\n\n\nFit the lognormal model used above to the estimates from the truncated data, i.e. using the df_realtime data set. How far away from the “true” parameters do you end up?\n\n\n\n\n\n\n\n\nSolution\n\n\n\n\n\n\nres &lt;- mod$sample(\n  data = list(\n    n = nrow(na.omit(df_realtime)),\n    y = na.omit(df_realtime)$onset_to_hosp\n  ),\n  refresh = 0, show_exceptions = FALSE, show_messages = FALSE\n)\nres\n\n variable   mean median   sd  mad     q5    q95 rhat ess_bulk ess_tail\n  lp__    -24.37 -24.06 1.01 0.73 -26.38 -23.41 1.00     1944     2356\n  meanlog   1.61   1.61 0.12 0.12   1.42   1.81 1.00     2547     2368\n  sdlog     0.62   0.61 0.09 0.08   0.49   0.78 1.00     3099     2560\n\n\n\n\n\nOnce again, we can write a model that adjusts for truncation, by re-creating the simulated truncation effect in the stan model:\n\ntmod &lt;- cmdstan_model(here(\"stan\", \"truncated_delay_model.stan\"))\ntmod$print(line_numbers = TRUE)\n\n 1: data {\n 2:   int&lt;lower = 0&gt; n;\n 3:   array[n] real&lt;lower = 0&gt; onset_to_hosp;\n 4:   array[n] real&lt;lower = 0&gt; time_since_onset;\n 5: }\n 6: \n 7: parameters {\n 8:   real meanlog;\n 9:   real&lt;lower = 0&gt; sdlog;\n10: }\n11: \n12: model {\n13:   meanlog ~ normal(0, 10);\n14:   sdlog ~ normal(0, 10) T[0, ];\n15: \n16:   for (i in 1:n) {\n17:     onset_to_hosp[i] ~ lognormal(meanlog, sdlog) T[0, time_since_onset[i]];\n18:   }\n19: }\n\n\n\n\n\n\n\n\nTake 5 minutes\n\n\n\nFamiliarise yourself with the model above. Which line introduces the truncation, i.e. the fact that we have not been able to observe hospitalisation times beyond the cutoff of (here) 40 days?\n\n\n\n\n\n\n\n\nSolution\n\n\n\n\n\nLine 17 defines the upper limit of onset_to_hosp as time_since_onset.\n\n\n\nNow we can use this model to re-estimate the parameters of the delay distribution:\n\ntres &lt;- tmod$sample(\n  data = list(\n    n = nrow(df_realtime),\n    onset_to_hosp = df_realtime$onset_to_hosp, \n    time_since_onset = 40 - df_realtime$onset_time\n  ),\n  refresh = 0, show_exceptions = FALSE, show_messages = FALSE\n)\ntres\n\n variable   mean median   sd  mad     q5    q95 rhat ess_bulk ess_tail\n  lp__    -21.90 -21.34 1.61 1.02 -25.54 -20.45 1.01      459      306\n  meanlog   2.29   1.89 1.58 0.29   1.56   4.34 1.01      487      259\n  sdlog     0.93   0.79 0.51 0.20   0.56   1.82 1.01      373      255\n\n\n\n\n\n\n\n\nTake 10 minutes\n\n\n\nTry re-simulating the delays using different parameters of the delay distribution. Can you establish under which conditions the bias in estimation gets worse?",
+    "crumbs": [
+      "Biases in delay distributions"
+    ]
+  },
+  {
+    "objectID": "sessions.html",
+    "href": "sessions.html",
+    "title": "Sessions",
+    "section": "",
+    "text": "Monday June 24: 9.00-9.30\n\nIntroduction to the course and the instructors (10 mins)\nMotivating the course: From an epidemiological line list to informing decisions in real-time (20 mins)"
+  },
+  {
+    "objectID": "sessions.html#session-0-introduction-and-course-overview",
+    "href": "sessions.html#session-0-introduction-and-course-overview",
+    "title": "Sessions",
+    "section": "",
+    "text": "Monday June 24: 9.00-9.30\n\nIntroduction to the course and the instructors (10 mins)\nMotivating the course: From an epidemiological line list to informing decisions in real-time (20 mins)"
+  },
+  {
+    "objectID": "sessions.html#session-1-r-stan-and-statistical-concept-background",
+    "href": "sessions.html#session-1-r-stan-and-statistical-concept-background",
+    "title": "Sessions",
+    "section": "Session 1: R, Stan, and statistical concept background",
+    "text": "Session 1: R, Stan, and statistical concept background\nMonday June 24: 9.30-10.30\n\nIntroduction to statistical concepts used in the course (15 mins)\nIntroduction to stan concepts used in the course (15 mins)\nPractice session: introduction to estimation in stan (30 mins)"
+  },
+  {
+    "objectID": "sessions.html#session-2-delay-distributions",
+    "href": "sessions.html#session-2-delay-distributions",
+    "title": "Sessions",
+    "section": "Session 2: Delay distributions",
+    "text": "Session 2: Delay distributions\nMonday June 24: 11.00-11.45\n\nIntroduction to epidemiological delays and how to represent them with probability distributions (10 mins)\nPractice session: simulate and estimate epidemiological delays (30 mins)\nWrap up (5 mins)"
+  },
+  {
+    "objectID": "sessions.html#session-3-biases-in-delay-distributions",
+    "href": "sessions.html#session-3-biases-in-delay-distributions",
+    "title": "Sessions",
+    "section": "Session 3: Biases in delay distributions",
+    "text": "Session 3: Biases in delay distributions\nMonday June 24: 11.45-12.30\n\nIntroduction to biases in delay distributions (15 mins)\nPractice session: Simulating biases in delay distributions and estimating delays without adjustment on these data (30 mins)\nMethods to adjust for biases in delay distributions (10 mins)\nPractice session: estimating delay distributions with adjustments for bias (30 mins)\nWrap up (5 mins)"
+  },
+  {
+    "objectID": "sessions.html#session-4-using-delay-distributions-to-model-the-data-generating-process-of-an-epidemic",
+    "href": "sessions.html#session-4-using-delay-distributions-to-model-the-data-generating-process-of-an-epidemic",
+    "title": "Sessions",
+    "section": "Session 4: Using delay distributions to model the data generating process of an epidemic",
+    "text": "Session 4: Using delay distributions to model the data generating process of an epidemic\nMonday June 24: 14.45-15.30\n\nUsing delay distributions to model the data generating process of an epidemic (15 mins)\nPractice session: implementing a convolution model and identifying potential problems (30 mins)"
+  },
+  {
+    "objectID": "sessions.html#session-5-r-estimation-and-the-renewal-equation",
+    "href": "sessions.html#session-5-r-estimation-and-the-renewal-equation",
+    "title": "Sessions",
+    "section": "Session 5: R estimation and the renewal equation",
+    "text": "Session 5: R estimation and the renewal equation\nMonday June 24: 16.00-17.30\n\nIntroduction to the time-varying reproduction number (10 mins)\nPractice session: using the renewal equation to estimate R (30 mins)\nCombining R estimation with delay distribution convolutions (10 mins)\nPractice session: combining R estimation with delay distribution convolutions (30 mins)\nWrap up (10 mins)"
+  },
+  {
+    "objectID": "sessions.html#session-6-nowcasting",
+    "href": "sessions.html#session-6-nowcasting",
+    "title": "Sessions",
+    "section": "Session 6: Nowcasting",
+    "text": "Session 6: Nowcasting\nTuesday June 25: 9.00-10.30\n\nIntroduction to nowcasting as a right-truncation problem (15 mins)\nPractice session: A simple nowcast model using pre-estimated delay distributions (15 mins)\nJoint estimation of delay distributions and nowcasting (15 mins)\nPractice session: Joint estimation of delay distributions and nowcasting (35 mins)\nWrap up (10 mins)"
+  },
+  {
+    "objectID": "sessions.html#session-7-forecasting-concepts",
+    "href": "sessions.html#session-7-forecasting-concepts",
+    "title": "Sessions",
+    "section": "Session 7: Forecasting concepts",
+    "text": "Session 7: Forecasting concepts\nTuesday June 25: 11.00-12.30\n\nIntroduction to forecasting as an epidemiological problem, and its relationship with nowcasting and R estimation (15 mins)\nPractice session: extending a model into the future (15 minutes)\nIntroduction to forecast evaluation (20 mins)\nPractice session: evaluate your forecast (30 mins)\nWrap up (10 mins)\n\nTuesday June 25: 16.00-17.30"
+  },
+  {
+    "objectID": "sessions.html#session-8-forecasting-models",
+    "href": "sessions.html#session-8-forecasting-models",
+    "title": "Sessions",
+    "section": "Session 8: Forecasting models",
+    "text": "Session 8: Forecasting models\nTuesday June 25: 14.00-15.30\n\nAn overview of forecasting models (15 mins)\nPractice session: Forecasting with a mechanistic model (30 mins)\nPractice session: Evaluating forecasts from a range of common models (45 mins)"
+  },
+  {
+    "objectID": "sessions.html#session-9-perspectives-on-forecasting",
+    "href": "sessions.html#session-9-perspectives-on-forecasting",
+    "title": "Sessions",
+    "section": "Session 9: Perspectives on forecasting",
+    "text": "Session 9: Perspectives on forecasting\nTuesday June 25: 16.00-16.45\n\nInstructor-led participant discussion about the evaluated forecasts (30 mins)\nThe unreasonable success of ensemble models (15 mins)"
+  },
+  {
+    "objectID": "sessions.html#session-10-methods-in-the-real-world",
+    "href": "sessions.html#session-10-methods-in-the-real-world",
+    "title": "Sessions",
+    "section": "Session 10: Methods in the real world",
+    "text": "Session 10: Methods in the real world\nTuesday June 25: 16.45-17.30\n\nInstructor panel: How do you use these methods in your work? Short talks and Q and A (45 mins)"
+  },
+  {
+    "objectID": "sessions.html#session-11-from-line-list-to-estimates",
+    "href": "sessions.html#session-11-from-line-list-to-estimates",
+    "title": "Sessions",
+    "section": "Session 11: From line list to estimates",
+    "text": "Session 11: From line list to estimates\nWednesday June 26: 9.00-10.30\n\nUsing what we have learned to solve epidemiological problems (10 mins)\nPractice session: starting from a line list, produce:\n\ndelay distribution estimates\nnowcasts\nR estimation\nforecasts using the models created in this course (70 mins)\n\nWrap up (10 mins)"
+  },
+  {
+    "objectID": "sessions.html#session-12-overview-of-available-tools",
+    "href": "sessions.html#session-12-overview-of-available-tools",
+    "title": "Sessions",
+    "section": "Session 12: Overview of available tools",
+    "text": "Session 12: Overview of available tools\nWednesday June 26: 11.00-12.00\n\nIntroduction to common packages for delay estimation, R estimation, nowcasting and forecasting (20 mins)\nPractice session: Choose from one of our suggested open source examples, run through it, and related it to the material in this course. (30 mins)\nWrap up (10 mins)"
+  },
+  {
+    "objectID": "sessions.html#session-13-end-of-course-summary-and-discussion",
+    "href": "sessions.html#session-13-end-of-course-summary-and-discussion",
+    "title": "Sessions",
+    "section": "Session 13: End of course summary and discussion",
+    "text": "Session 13: End of course summary and discussion\nWednesday June 26: 12.00-12.30\n\nSummary of the course (15 mins)\nDiscussion of future directions and how to continue learning (15 mins)"
+  },
+  {
+    "objectID": "getting-set-up.html",
+    "href": "getting-set-up.html",
+    "title": "Required software",
+    "section": "",
+    "text": "Required software\n\nR is used as the main programming language. Please install at least version: R-4.2.0.\nRStudio (optional) is a popular graphic user interface (GUI).\n\n\n\nInstallation of the nfiidd package\nTo install the packages needed in the course, including the nfiidd package that contains data files used, you can use the pak package:\n\ninstall.packages(\"pak\")\npak::pak(\"nfidd/nfidd\", dependencies = \"all\")\n\nThen you can check that the installation completed successfully by loading the package into your R session:\n\nlibrary(\"nfidd\")\n\n\n\nInstalling cmdstan\nThe course relies on running stan through the cmdstanr R package, which itself uses the cmdstan software. This requires a separate installation step:\n\ncmdstanr::install_cmdstan()\n\nIf there are any problems with this, you can try (on Windows) to fix them using\n\ncmdstanr::check_cmdstan_toolchain(fix = TRUE)\n\nYou can test that you have a working cmdstanr setup using\n\ncmdstanr::cmdstan_version()\n\n[1] \"2.35.0\"\n\n\nFor more details, and for links to resources in case something goes wrong, see the Getting Started with CmdStanr vignette of the package."
+  },
+  {
+    "objectID": "learning_objectives.html",
+    "href": "learning_objectives.html",
+    "title": "Independent learning outcomes",
+    "section": "",
+    "text": "familiarity with R concepts used in the course\n\nto be completed once the course has been fully written but likely includes functions, accessing documentation, etc.\n\nunderstanding of statistical concepts used in the course\n\nto be completed once the course has been fully written but likely includes discrete and continuous probability distributions"
+  },
+  {
+    "objectID": "learning_objectives.html#r-and-statistical-concepts-used",
+    "href": "learning_objectives.html#r-and-statistical-concepts-used",
+    "title": "Independent learning outcomes",
+    "section": "",
+    "text": "familiarity with R concepts used in the course\n\nto be completed once the course has been fully written but likely includes functions, accessing documentation, etc.\n\nunderstanding of statistical concepts used in the course\n\nto be completed once the course has been fully written but likely includes discrete and continuous probability distributions"
+  },
+  {
+    "objectID": "learning_objectives.html#delay-distributions",
+    "href": "learning_objectives.html#delay-distributions",
+    "title": "Independent learning outcomes",
+    "section": "Delay distributions",
+    "text": "Delay distributions\n\nunderstanding of the ubiquity of delays in epidemiological data\nunderstanding of how delays affect population-level epidemiological data via discrete convolutions\nability to apply convolutions of discrete probability distributions to epidemiological data in R"
+  },
+  {
+    "objectID": "learning_objectives.html#biases-in-delay-distributions",
+    "href": "learning_objectives.html#biases-in-delay-distributions",
+    "title": "Independent learning outcomes",
+    "section": "Biases in delay distributions",
+    "text": "Biases in delay distributions\n\nunderstanding of how censoring affects the estimation and interpretation of epidemiological delay distributions\nability to estimate parameters of probability distributions from observed delays, taking into account censoring, using R\nunderstanding of right truncation in epidemiolgical data\nability to estimate parameters of probability distributions from observed delays, taking into account truncation, in R"
+  },
+  {
+    "objectID": "learning_objectives.html#r-estimation-and-the-renewal-equation",
+    "href": "learning_objectives.html#r-estimation-and-the-renewal-equation",
+    "title": "Independent learning outcomes",
+    "section": "R estimation and the renewal equation",
+    "text": "R estimation and the renewal equation\n\nunderstanding of the reproduction number and challenges in its estimation\nawareness of broad categories of methods for estimating the reproduction number, including estimation from population-level data\nunderstanding of the renewal equation as an epidemiological model\nawareness of connections of the renewal equation with other epidemiological models\nfamiliarity with the generation time as a particular type of delay distributions\nability to estimate static and time-varying reproduction numbers from time-series data in R"
+  },
+  {
+    "objectID": "learning_objectives.html#nowcasting",
+    "href": "learning_objectives.html#nowcasting",
+    "title": "Independent learning outcomes",
+    "section": "Nowcasting",
+    "text": "Nowcasting\n\nunderstanding of nowcasting as a particular right truncation problem\nAbility to perform a simple nowcast in R\nawareness of the breadth of methods to perform nowcasting\nR estimation as a nowcasting problem"
+  },
+  {
+    "objectID": "learning_objectives.html#forecasting",
+    "href": "learning_objectives.html#forecasting",
+    "title": "Independent learning outcomes",
+    "section": "Forecasting",
+    "text": "Forecasting\n\nunderstanding of forecasting as an epidemiological problem, and its relationship with nowcasting and R estimation\nunderstanding of the difference between forecasts, projections and scenarios\nfamiliarity with common forecasting models and their properties, and applicability in epidemiology\nability to use a common forecasting model on an epidemiological time series in R\nability to use a semi-mechanistic model for forecasting an epidemiological time series in R"
+  },
+  {
+    "objectID": "learning_objectives.html#ensemble-models",
+    "href": "learning_objectives.html#ensemble-models",
+    "title": "Independent learning outcomes",
+    "section": "Ensemble models",
+    "text": "Ensemble models\n\nunderstanding of predictive ensembles and their properties\nability to create a predictive ensemble of forecasts in R"
+  },
+  {
+    "objectID": "learning_objectives.html#evaluating-forecasts-and-nowcasts",
+    "href": "learning_objectives.html#evaluating-forecasts-and-nowcasts",
+    "title": "Independent learning outcomes",
+    "section": "Evaluating forecasts (and nowcasts)",
+    "text": "Evaluating forecasts (and nowcasts)\n\nfamiliarity with metrics for evaluating deterministic forecasts (e.g. MAE)\nability to score deterministic forecasts in R\nfamiliarity with metrics for evaluating probabilistic forecasts and their properties\nability to score probabilistic forecasts in R"
+  },
+  {
+    "objectID": "sessions/end-of-course-summary-and-discussion.html",
+    "href": "sessions/end-of-course-summary-and-discussion.html",
+    "title": "End of course summary and discussion",
+    "section": "",
+    "text": "Objective\nThe aim of this session is to summarize the course and discuss future directions.\n\n\nSummary of the course\n\n\nFuture directions and how to continue learning",
+    "crumbs": [
+      "End of course summary and discussion"
+    ]
+  },
+  {
+    "objectID": "sessions/nowcasting.html",
+    "href": "sessions/nowcasting.html",
+    "title": "Nowcasting",
+    "section": "",
+    "text": "The aim of this session is to introduce the concept of nowcasting, and see how we can perform a nowcast if we know the underlying delay distribution.",
+    "crumbs": [
+      "Nowcasting"
+    ]
+  },
+  {
+    "objectID": "sessions/nowcasting.html#the-simplest-possible-nowcasting-model",
+    "href": "sessions/nowcasting.html#the-simplest-possible-nowcasting-model",
+    "title": "Nowcasting",
+    "section": "The simplest possible nowcasting model",
+    "text": "The simplest possible nowcasting model\nHere we assume that the delay distribution is known and that we can use it to nowcast the most recent data. In practice, the delay distribution is often not known and needs to be estimated from the data. We could do this using methods from the session on biases in delay distributions.\nIn the session on convolutions we used delay distributions convolved with the infection times to estimate the time series of symptom onsets. A simple way to nowcast is to use the same approach but using the cumulative distribution function of the delay distribution rather than the probability density function and only apply it to the most recent data as this is the only data that can be subject to change (due to delays in reporting). We will build intuition for this as usual using simulation. First we define the proportion reported using a delay distribution, again using a lognormal distribution with meanlog 1 and sdlog 0.5:\n\nproportion_reported &lt;- plnorm(1:15, 1, 0.5)\nplot(proportion_reported)\n\n\n\n\n\n\n\n\nThe plnorm() function is related to the rlnorm() function we used earlier to simulate the individual level reporting delay, but instead it gives the cumulative distribution function rather than random samples. That is, it gives us the probability that a report is made on day 1 or earlier, day 2 or earlier, etc.\nWe can now construct some simulated data and use this delay distribution to nowcast the most recent data. Here we use the same simulation approach as in the renewal session and apply the reporting_delay to the last 15 days of data.\n\nsource(here::here(\"snippets\", \"simulate-onsets.r\"))\nreported_onset_df &lt;- onset_df |&gt;\n  filter(day &lt; cutoff) |&gt;\n  mutate(proportion_reported = c(rep(1, n() - 15), rev(proportion_reported)),\n         reported_onsets = rpois(n(), onsets * proportion_reported)\n  )\ntail(reported_onset_df)\n\n# A tibble: 6 × 5\n    day onsets infections proportion_reported reported_onsets\n  &lt;dbl&gt;  &lt;int&gt;      &lt;int&gt;               &lt;dbl&gt;           &lt;int&gt;\n1    35     13         16              0.943               11\n2    36     11         14              0.889               12\n3    37      8         25              0.780                7\n4    38     12         17              0.578               14\n5    39     10         17              0.270                1\n6    40     14         21              0.0228               0\n\n\n\n\n\n\n\n\nTake 5 minutes\n\n\n\nSpend a few minutes trying to understand the code above. What is the proportion_reported? What is the reported_onsets?\n\n\n\n\n\n\n\n\nSolution\n\n\n\n\n\n\nThe proportion_reported is the cumulative distribution function of the delay distribution. It gives the probability that a report is made on day 1 or earlier, day 2 or earlier, etc. Note that for days more that 15 days into the past\nThe reported_onsets are the number of onsets that are reported on each day. This is calculated by multiplying the number of onsets by the proportion of onsets that are reported on each day. It has Poisson noise added to it to simulate the stochasticity in the reporting process.\n\n\n\n\nWe can now fit our first nowcasting model. Here we assume exactly the same generative process as we used for simulation and model the number of onsets as independent draws from a normal distribution.\n\nmod &lt;- cmdstan_model(here(\"stan\", \"simple-nowcast.stan\"))\nmod$print(line_numbers = TRUE)\n\n 1: functions {\n 2:   #include \"functions/condition_onsets_by_report.stan\"\n 3: }\n 4: \n 5: data {\n 6:   int n;                // number of days\n 7:   array[n] int obs;     // observed symptom onsets\n 8:   int report_max;       // max reporting delay\n 9:   array[report_max + 1] real report_cdf;\n10: }\n11: \n12: parameters {\n13:   array[n] real&lt;lower = 0&gt; onsets;\n14: }\n15: \n16: transformed parameters {\n17:   array[n] real reported_onsets = condition_onsets_by_report(onsets, report_cdf);\n18: }\n19: \n20: model {\n21:   onsets ~ normal(5, 20) T[0,];\n22:   // Likelihood\n23:   obs ~ poisson(reported_onsets);\n24: }\n\n\n\n\n\n\n\n\nTake 5 minutes\n\n\n\nFamiliarise yourself with the model above. What does it do?\n\n\n\n\n\n\n\n\nSolution\n\n\n\n\n\n\nOn line 2 we define a new function condition_onsets_by_report.stan which takes the number of onsets and reports and the delay distribution as input and returns the nowcasted number of onsets.\nOn line 17, this function is used to calculate the nowcasted number of onsets and this is then used in the likelihood.\nOn line 21, we define the generative process for the number of onsets. Here we assume that onsets are independent with each drawn from a normal distribution.\n\n\n\n\nOnce again we can generate estimates from this model:\n\ndata &lt;- list(\n  n = nrow(reported_onset_df) - 1,\n  obs = reported_onset_df$reported_onsets[-1],\n  report_max = length(proportion_reported) - 1,\n  report_cdf = proportion_reported \n)\nsimple_nowcast_fit &lt;- mod$sample(\n  data = data, parallel_chains = 4, refresh = ifelse(interactive(), 50, 0), show_exceptions = FALSE, show_messages = FALSE\n)\nsimple_nowcast_fit\n\n  variable   mean median   sd  mad     q5    q95 rhat ess_bulk ess_tail\n lp__      146.33 146.65 4.85 4.85 137.47 153.61 1.00     1276     2376\n onsets[1]   1.00   0.71 0.99 0.72   0.06   2.96 1.00     5384     2315\n onsets[2]   1.00   0.70 1.02 0.72   0.05   2.86 1.00     4973     2164\n onsets[3]   0.99   0.69 1.00 0.71   0.05   3.02 1.00     4895     2108\n onsets[4]   1.00   0.68 1.02 0.72   0.05   2.97 1.00     5242     1921\n onsets[5]   1.00   0.72 0.98 0.72   0.05   2.82 1.00     5389     2316\n onsets[6]   1.02   0.69 1.05 0.71   0.05   3.06 1.00     5606     2379\n onsets[7]   2.01   1.69 1.39 1.24   0.37   4.69 1.00     7390     2765\n onsets[8]   1.01   0.71 1.04 0.72   0.05   3.05 1.00     4353     1656\n onsets[9]   1.03   0.74 1.03 0.74   0.05   3.06 1.00     5353     2067\n\n # showing 10 of 79 rows (change via 'max_rows' argument or 'cmdstanr_max_rows' option)\n\n\nWe can now plot onsets alongside those nowcasted by the model:\n\nnowcast_onsets &lt;- simple_nowcast_fit |&gt;\n  gather_draws(onsets[day]) |&gt;\n  group_by(day, .variable) |&gt;\n  summarise(\n    median = median(.value),\n    lower = quantile(.value, 0.05),\n    upper = quantile(.value, 0.95),\n    .groups = \"drop\"\n  ) |&gt;\n  mutate(day = day + 1)\n\n\nreported_onset_df |&gt; \n  filter(day &gt; 1) |&gt;\n  left_join(nowcast_onsets, by = \"day\") |&gt;\n  ggplot(aes(x = day, y = onsets)) +\n  geom_col() +\n  geom_ribbon(aes(ymin = lower, ymax = upper), alpha = 0.5) +\n  geom_line(aes(y = median))\n\n\n\n\n\n\n\n\n\n\n\n\n\n\nTip\n\n\n\nAs we found in the using delay distributions to model the data generating process of an epidemic session, this simple model struggles to recreate the true number of onsets. This is because it does not capture the generative process of the data (i.e. the transmission process and delays from infection to onset). In the next section we will see how we can use a model that does capture this generative process to improve our nowcasts.",
+    "crumbs": [
+      "Nowcasting"
+    ]
+  },
+  {
+    "objectID": "sessions/nowcasting.html#adding-in-a-geometric-random-walk-to-the-nowcasting-model",
+    "href": "sessions/nowcasting.html#adding-in-a-geometric-random-walk-to-the-nowcasting-model",
+    "title": "Nowcasting",
+    "section": "Adding in a geometric random walk to the nowcasting model",
+    "text": "Adding in a geometric random walk to the nowcasting model\nAs we saw in the session on the renewal equation, a geometric random walk is a simple way to model multiplicative growth. Adding this into our simple nowcasting model may help us to better capture the generative process of the data and so produce a better nowcast.\nWe first load the model\n\nrw_mod &lt;- cmdstan_model(here(\"stan\", \"simple-nowcast-rw.stan\"))\nrw_mod$print(line_numbers = TRUE)\n\n 1: functions {\n 2:   #include \"functions/geometric_random_walk.stan\"\n 3:   #include \"functions/condition_onsets_by_report.stan\"\n 4: }\n 5: \n 6: data {\n 7:   int n;                // number of days\n 8:   array[n] int obs;     // observed symptom onsets\n 9:   int report_max;       // max reporting delay\n10:   array[report_max + 1] real report_cdf;\n11: }\n12: \n13: parameters {\n14:   real&lt;lower=0&gt; init_onsets;\n15:   array[n-1] real rw_noise;\n16:   real&lt;lower=0&gt; rw_sd;\n17: }\n18: \n19: transformed parameters {\n20:   array[n] real onsets = geometric_random_walk(init_onsets, rw_noise, rw_sd);\n21:   array[n] real reported_onsets = condition_onsets_by_report(onsets, report_cdf);\n22: }\n23: \n24: model {\n25:   init_onsets ~ lognormal(0, 1) T[0,];\n26:   rw_noise ~ std_normal();\n27:   rw_sd ~ normal(0, 5) T[0,];\n28:   //Likelihood\n29:   obs ~ poisson(reported_onsets);\n30: }\n\n\nand then fit it\n\nrw_nowcast_fit &lt;- rw_mod$sample(\n  data = data, parallel_chains = 4, refresh = ifelse(interactive(), 50, 0), show_exceptions = FALSE, show_messages = FALSE\n)\n\nWarning: 265 of 4000 (7.0%) transitions ended with a divergence.\nSee https://mc-stan.org/misc/warnings for details.\n\nrw_nowcast_fit\n\n    variable  mean median   sd  mad    q5   q95 rhat ess_bulk ess_tail\n lp__        73.19  73.30 8.02 7.89 59.97 87.54 1.02      173       45\n init_onsets  0.35   0.31 0.21 0.20  0.09  0.75 1.00     2807     2442\n rw_noise[1] -1.12  -1.10 0.78 0.83 -2.42  0.11 1.00     1850     2856\n rw_noise[2] -0.73  -0.75 0.84 0.84 -2.11  0.60 1.00     2946     2577\n rw_noise[3] -0.37  -0.40 0.85 0.85 -1.75  1.08 1.00     2691     1888\n rw_noise[4] -0.12  -0.12 0.86 0.82 -1.58  1.32 1.01     3384     2527\n rw_noise[5]  0.09   0.07 0.88 0.88 -1.35  1.62 1.00     1046      301\n rw_noise[6]  0.41   0.42 0.86 0.85 -1.04  1.77 1.01      825     2400\n rw_noise[7] -0.03  -0.05 0.86 0.84 -1.42  1.39 1.00     3626     2526\n rw_noise[8]  0.29   0.29 0.87 0.86 -1.11  1.76 1.00     1814     2685\n\n # showing 10 of 119 rows (change via 'max_rows' argument or 'cmdstanr_max_rows' option)\n\n\nAgain we can extract the nowcasted onsets and plot them alongside the observed data:\n\nrw_nowcast_onsets &lt;- rw_nowcast_fit |&gt;\n  gather_draws(onsets[day]) |&gt;\n  group_by(day, .variable) |&gt;\n  summarise(\n    median = median(.value),\n    lower = quantile(.value, 0.05),\n    upper = quantile(.value, 0.95),\n    .groups = \"drop\"\n  ) |&gt;\n  mutate(day = day + 1)\n\n\nreported_onset_df |&gt; \n  filter(day &gt; 1) |&gt;\n  left_join(rw_nowcast_onsets, by = \"day\") |&gt;\n  ggplot(aes(x = day, y = onsets)) +\n  geom_col() +\n  geom_ribbon(aes(ymin = lower, ymax = upper), alpha = 0.5) +\n  geom_line(aes(y = median))\n\n\n\n\n\n\n\n\n\n\n\n\n\n\nTake 2 minutes\n\n\n\nWhat do you think of the nowcast now? Does it look better than the previous one?\n\n\n::: {.callout-note collapse=“true”} ## Solution - The nowcast better matches the ultimately observed data. The geometric random walk allows the model to capture the multiplicative growth in the data and so better capture that current indidence is related to past incidence. - This should be particularly true when the data is more truncated (i.e nearer to the date of the nowcast) as the geometric random walk allows the model to extrapolate incidence based on previous incidence rather than relying on the prior distribution as the simpler model did. - However, the model is still quite simple and so may struggle to capture more complex patterns in the data. In particular the prior model for the geometric random walk assumes that onsets are the same as the previous day with statistical noise. This may not be a good assumption in a rapidly changing epidemic (where the reproduction number is not near 1). :::",
+    "crumbs": [
+      "Nowcasting"
+    ]
+  },
+  {
+    "objectID": "sessions/nowcasting.html#motivation",
+    "href": "sessions/nowcasting.html#motivation",
+    "title": "Nowcasting",
+    "section": "Motivation",
+    "text": "Motivation\nSo far we have assumed that the delay distribution is known. In practice, this is often not the case and we need to estimate it from the data. As we discussed in the session on biases in delay distributions, this can be done using individual data and then passing this estimate to a simple nowcasting model like those above. However, this has the disadvantage that the nowcasting model does not take into account the uncertainty in the delay distribution or observation error of the primary events. We can instead estimate the delay distribution and nowcast the data jointly.",
+    "crumbs": [
+      "Nowcasting"
+    ]
+  },
+  {
+    "objectID": "sessions/nowcasting.html#the-reporting-triangle",
+    "href": "sessions/nowcasting.html#the-reporting-triangle",
+    "title": "Nowcasting",
+    "section": "The reporting triangle",
+    "text": "The reporting triangle\nIn order to jointly estimate we need to decompose observations into what is known as the reporting triangle. This is a matrix where the rows are the days of onset and the columns are the days of report. The entries are the number of onsets on day \\(i\\) that are reported on day \\(j\\). We can then use this matrix to estimate the delay distribution and nowcast the data. It is referred to as a triangle because the data for the more recent data entries are incomplete which gives the matrix a triangular shape.\nWe can construct the reporting triangle from onsets (\\(N_{t}\\)) as follows: \\[\nN_{t} = \\sum_{d=0}^{D} n_{t,d}\n\\]\nWhere \\(n_{t,d}\\) is the number of onsets on day \\(t\\) that are reported on day \\(t-d\\) and \\(D\\) represents the maximum delay between date of reference and time of report which in theory could be infinite but in practice we set to a finite value in order to make the model identifiable and computationally feasible. We can now construct a model to estimate \\(n_{t,d}\\),\n\\[\n  n_{t,d} \\mid \\lambda_{t},p_{t,d} \\sim \\text{Poisson} \\left(\\lambda_{t} \\times p_{t,d} \\right),\\ t=1,...,T.\n\\]\nwhere \\(\\lambda_{t}\\) is the expected number of onsets on day \\(t\\) and \\(p_{t,d}\\) is the probability that an onset on day \\(t\\) is reported on day \\(t-d\\). Here \\(\\lambda_{t}\\) is the same as the expected number of onsets on day \\(t\\) in the simple nowcasting model above so we again modelled it using a geometric random walk for now. We model \\(p_{t,d}\\) as a Dirichlet distribution as it is a distribution over probabilities. \\(p_{t,d}\\) is equivalent to the reporting delays we have been using as fixed quantities so far but now estimated within the model. In most real world settings we would want to use our domain expertise to inform the prior distribution of \\(p_{t,d}\\).",
+    "crumbs": [
+      "Nowcasting"
+    ]
+  },
+  {
+    "objectID": "sessions/nowcasting.html#simulating-the-reporting-triangle",
+    "href": "sessions/nowcasting.html#simulating-the-reporting-triangle",
+    "title": "Nowcasting",
+    "section": "Simulating the reporting triangle",
+    "text": "Simulating the reporting triangle\nNow that we are aiming to jointly estimate the delay distribution we need additional data. We can simulate this data by using the same generative process as above but now also simulating the reporting delays.\nWe first need to simulate the reporting delays:\n\nsource(here::here(\"functions\", \"censored-delay-pmf.r\"))\nreporting_delay_pmf &lt;- censored_delay_pmf(rlnorm, max = 15, meanlog = 1, sdlog = 0.5)\nplot(reporting_delay_pmf)\n\n\n\n\n\n\n\n\nWe can then simulate the reporting triangle:\n\nreporting_triangle &lt;- onset_df |&gt;\n  filter(day &lt; cutoff) |&gt;\n  mutate(\n    reporting_delay = list(tibble(d = 0:15, reporting_delay = reporting_delay_pmf)\n  )) |&gt;\n  unnest(reporting_delay) |&gt;\n  mutate(\n    reported_onsets = rpois(n(), onsets * reporting_delay)\n  ) |&gt;\n  mutate(reported_day = day + d)\n\nWe also need to update our simulated truth data to include the Poisson observation error we are assuming is part of the observation process.\n\nnoisy_onsets_df &lt;- reporting_triangle |&gt;\n  group_by(day) |&gt;\n  summarise(noisy_onsets = sum(reported_onsets)) |&gt;\n  ungroup()\n\nAs we only partially observe the reporting triangle we need to filter it to only include the data we have observed:\n\nfiltered_reporting_triangle &lt;- reporting_triangle |&gt;\n  filter(reported_day &lt;= max(day))",
+    "crumbs": [
+      "Nowcasting"
+    ]
+  },
+  {
+    "objectID": "sessions/nowcasting.html#fitting-the-joint-model",
+    "href": "sessions/nowcasting.html#fitting-the-joint-model",
+    "title": "Nowcasting",
+    "section": "Fitting the joint model",
+    "text": "Fitting the joint model\nAs usual we start by loading the model:\n\njoint_mod &lt;- cmdstan_model(here(\"stan\", \"joint-nowcast.stan\"))\njoint_mod$print(line_numbers = TRUE)\n\n 1: functions {\n 2:   #include \"functions/geometric_random_walk.stan\"\n 3:   #include \"functions/observe_onsets_with_delay.stan\"\n 4:   #include \"functions/combine_obs_with_predicted_obs_rng.stan\"\n 5: }\n 6: \n 7: data {\n 8:   int n;                // number of days\n 9:   int m;                // number of reports\n10:   array[n] int p;       // number of observations per day\n11:   array[m] int obs;     // observed symptom onsets\n12:   int d;                // number of reporting delays\n13: }\n14: \n15: transformed data{\n16:   array[n] int P = to_int(cumulative_sum(p));\n17:   array[n] int D = to_int(cumulative_sum(rep_array(d, n)));\n18: }\n19: \n20: parameters {\n21:   real&lt;lower=0&gt; init_onsets;\n22:   array[n-1] real rw_noise;\n23:   real&lt;lower=0&gt; rw_sd;\n24:   simplex[d] reporting_delay; // reporting delay distribution\n25: }\n26: \n27: transformed parameters {\n28:   array[n] real onsets = geometric_random_walk(init_onsets, rw_noise, rw_sd);\n29:   array[m] real onsets_by_report = observe_onsets_with_delay(onsets, reporting_delay, P, p);\n30: }\n31: \n32: model {\n33:   // Prior\n34:   init_onsets ~ normal(1, 1) T[0,];\n35:   rw_noise ~ std_normal();\n36:   rw_sd ~ normal(0, 0.1) T[0,];\n37:   reporting_delay ~ dirichlet(rep_vector(1, d));\n38:   // Likelihood\n39:   obs ~ poisson(onsets_by_report);\n40: }\n41: \n42: generated quantities {\n43:   array[d*n] real complete_onsets_by_report = observe_onsets_with_delay(onsets, reporting_delay, D, rep_array(d, n));\n44:   array[n] int nowcast = combine_obs_with_predicted_obs_rng(obs, complete_onsets_by_report, P, p, d, D);\n45: }\n46: \n\n\nand then fit it:\n\njoint_data &lt;- list(\n  n = length(unique(filtered_reporting_triangle$day)),                # number of days\n  m = nrow(filtered_reporting_triangle),               # number of reports\n  p = filtered_reporting_triangle |&gt;\n   group_by(day) |&gt;\n   filter(d == max(d)) |&gt;\n   mutate(d = d + 1) |&gt;\n   pull(d),       # number of observations per day\n  obs = filtered_reporting_triangle$reported_onsets,     # observed symptom onsets\n  d = 16               # number of reporting delays\n)\njoint_nowcast_fit &lt;- joint_mod$sample(\n  data = joint_data, parallel_chains = 4, refresh = 0, show_exceptions = FALSE, show_messages = FALSE\n)\njoint_nowcast_fit\n\n    variable    mean  median   sd  mad      q5     q95 rhat ess_bulk ess_tail\n lp__        -215.76 -215.55 5.69 5.64 -225.62 -206.62 1.01     1582     2617\n init_onsets    0.19    0.15 0.17 0.14    0.01    0.54 1.00     4455     2466\n rw_noise[1]   -1.02   -1.01 0.88 0.87   -2.50    0.43 1.00     6799     3275\n rw_noise[2]   -0.76   -0.77 0.93 0.94   -2.32    0.73 1.00     6897     2760\n rw_noise[3]   -0.58   -0.59 0.93 0.90   -2.13    0.93 1.00     6308     3144\n rw_noise[4]   -0.40   -0.41 0.95 0.95   -1.96    1.18 1.00     7529     2814\n rw_noise[5]   -0.22   -0.22 0.95 0.96   -1.76    1.36 1.00     8033     3139\n rw_noise[6]   -0.08   -0.09 0.93 0.96   -1.57    1.43 1.00     6983     2860\n rw_noise[7]    0.08    0.07 0.94 0.93   -1.46    1.63 1.00     6384     2253\n rw_noise[8]   -0.04   -0.06 0.94 0.94   -1.57    1.55 1.00     7699     3063\n\n # showing 10 of 1298 rows (change via 'max_rows' argument or 'cmdstanr_max_rows' option)\n\n\nOne benefit of this model is that because we have decomposed the data into the reporting triangle we can make a nowcast that uses the data we have available augmented with predictions from the model. This should give us far more accurate uncertainty estimates than the simple nowcasting models above (see stan/functions/combine_obs_with_predicted_obs_rng.stan but note the code is fairly involved). We now extract this nowcast:\n\njoint_nowcast_onsets &lt;- joint_nowcast_fit |&gt;\n  gather_draws(nowcast[day]) |&gt;\n  group_by(day, .variable) |&gt;\n  summarise(\n    median = median(.value),\n    lower = quantile(.value, 0.05),\n    upper = quantile(.value, 0.95),\n    .groups = \"drop\"\n  ) |&gt;\n  mutate(day = day)\n\nFinally we can plot the nowcast alongside the observed data:\n\nnoisy_onsets_df |&gt; \n  filter(day &gt; 1) |&gt;\n  left_join(joint_nowcast_onsets, by = \"day\") |&gt;\n  ggplot(aes(x = day, y = noisy_onsets)) +\n  geom_col() +\n  geom_ribbon(aes(ymin = lower, ymax = upper), alpha = 0.5) +\n  geom_line(aes(y = median))\n\n\n\n\n\n\n\n\n\n\n\n\n\n\nTake 5 minutes\n\n\n\nLook back at the last three nowcasts. How do they compare? What are the advantages and disadvantages of each? Could we improve the nowcasts further?\n\n\n\n\n\n\n\n\nSolution\n\n\n\n\n\n\nThe simple nowcast struggled to capture the generative process of the data and so produced poor nowcasts. The nowcast with the geometric random walk was better but still struggled to capture the generative process of the data. The joint nowcast was the best of the three as it properly handled the uncertainty and allowed us to fit the delay distribution versus relying on known delays.\nHowever, the joint nowcast is still quite simple and so may struggle to capture more complex patterns in the data. In particular the prior model for the geometric random walk assumes that onsets are the same as the previous day with some statistical noise. This may not be a good assumption in a rapidly changing epidemic (where the reproduction number is not near 1).\nIn addition, whilst we say it is “quit simple” as should be clear from the code it is actually quite complex and computationally intensive. This is because we are fitting a model to the reporting triangle which is a mucher larger data set and so the model is relatively quite slow to fit.",
+    "crumbs": [
+      "Nowcasting"
+    ]
+  },
+  {
+    "objectID": "sessions/slides/introduction-to-biases-in-epidemiological-delays.html#issue-1-double-censoring",
+    "href": "sessions/slides/introduction-to-biases-in-epidemiological-delays.html#issue-1-double-censoring",
+    "title": "Introduction to biases in epidemiological delays",
+    "section": "Issue #1: Double censoring",
+    "text": "Issue #1: Double censoring\n\nreporting of events usually as a date (not date + precise time)\nfor short delays this can make quite a difference\naccounting for it incorrectly can introduce more bias than doing nothing"
+  },
+  {
+    "objectID": "sessions/slides/introduction-to-biases-in-epidemiological-delays.html#double-censoring-example",
+    "href": "sessions/slides/introduction-to-biases-in-epidemiological-delays.html#double-censoring-example",
+    "title": "Introduction to biases in epidemiological delays",
+    "section": "Double censoring: example",
+    "text": "Double censoring: example\nWe are trying to estimate an incubation period. For person A we know exposure happened on day 1 and symptom onset on day 3."
+  },
+  {
+    "objectID": "sessions/slides/introduction-to-biases-in-epidemiological-delays.html#double-censoring-example-1",
+    "href": "sessions/slides/introduction-to-biases-in-epidemiological-delays.html#double-censoring-example-1",
+    "title": "Introduction to biases in epidemiological delays",
+    "section": "Double censoring: example",
+    "text": "Double censoring: example\nWe are trying to estimate an incubation period. For person A we know exposure happened on day 1 and symptom onset on day 3."
+  },
+  {
+    "objectID": "sessions/slides/introduction-to-biases-in-epidemiological-delays.html#double-censoring-example-2",
+    "href": "sessions/slides/introduction-to-biases-in-epidemiological-delays.html#double-censoring-example-2",
+    "title": "Introduction to biases in epidemiological delays",
+    "section": "Double censoring: example",
+    "text": "Double censoring: example\nWe are trying to estimate an incubation period. For person A we know exposure happened on day 1 and symptom onset on day 3."
+  },
+  {
+    "objectID": "sessions/slides/introduction-to-biases-in-epidemiological-delays.html#double-censoring-example-3",
+    "href": "sessions/slides/introduction-to-biases-in-epidemiological-delays.html#double-censoring-example-3",
+    "title": "Introduction to biases in epidemiological delays",
+    "section": "Double censoring: example",
+    "text": "Double censoring: example\nWe are trying to estimate an incubation period. For person A we know exposure happened on day 1 and symptom onset on day 3.\n\nThe true incubation period of A could be anywhere between 1 and 3 days (but not all equally likely)."
+  },
+  {
+    "objectID": "sessions/slides/introduction-to-biases-in-epidemiological-delays.html#issue-2-right-truncation",
+    "href": "sessions/slides/introduction-to-biases-in-epidemiological-delays.html#issue-2-right-truncation",
+    "title": "Introduction to biases in epidemiological delays",
+    "section": "Issue #2: right truncation",
+    "text": "Issue #2: right truncation\n\nreporting of events can be triggered by the secondary event\nin that case, longer delays might be missing because whilst the primary events have occurred the secondary events have not occurred yet"
+  },
+  {
+    "objectID": "sessions/slides/introduction-to-biases-in-epidemiological-delays.html#example-right-truncation",
+    "href": "sessions/slides/introduction-to-biases-in-epidemiological-delays.html#example-right-truncation",
+    "title": "Introduction to biases in epidemiological delays",
+    "section": "Example: right truncation",
+    "text": "Example: right truncation\nWe are trying to estimate an incubation period. Each arrow represents one person with an associated pair of events (infection and symptom onset)."
+  },
+  {
+    "objectID": "sessions/slides/introduction-to-biases-in-epidemiological-delays.html#example-right-truncation-1",
+    "href": "sessions/slides/introduction-to-biases-in-epidemiological-delays.html#example-right-truncation-1",
+    "title": "Introduction to biases in epidemiological delays",
+    "section": "Example: right truncation",
+    "text": "Example: right truncation\nWe are trying to estimate an incubation period. Each arrow represents one person with an associated pair of events (infection and symptom onset)."
+  },
+  {
+    "objectID": "sessions/slides/introduction-to-biases-in-epidemiological-delays.html#example-right-truncation-2",
+    "href": "sessions/slides/introduction-to-biases-in-epidemiological-delays.html#example-right-truncation-2",
+    "title": "Introduction to biases in epidemiological delays",
+    "section": "Example: right truncation",
+    "text": "Example: right truncation\nWe are trying to estimate an incubation period. Each arrow represents one person with an associated pair of events (infection and symptom onset)."
+  },
+  {
+    "objectID": "sessions/slides/introduction-to-biases-in-epidemiological-delays.html#example-right-truncation-3",
+    "href": "sessions/slides/introduction-to-biases-in-epidemiological-delays.html#example-right-truncation-3",
+    "title": "Introduction to biases in epidemiological delays",
+    "section": "Example: right truncation",
+    "text": "Example: right truncation\nWe are trying to estimate an incubation period. Each arrow represents one person with an associated pair of events (infection and symptom onset)\n\nOn the day of analysis we have not observed some delays yet, and these tended to be longer."
+  },
+  {
+    "objectID": "sessions/slides/introduction-to-biases-in-epidemiological-delays.html#your-turn",
+    "href": "sessions/slides/introduction-to-biases-in-epidemiological-delays.html#your-turn",
+    "title": "Introduction to biases in epidemiological delays",
+    "section": " Your Turn",
+    "text": "Your Turn\n\nSimulate epidemiological delays with biases\nEstimate parameters of a delay distribution, correcting for biases\n\nReturn to the session\n\n\n\nIntroduction to biases in epidemiological delays"
+  },
+  {
+    "objectID": "sessions/delay-distributions.html",
+    "href": "sessions/delay-distributions.html",
+    "title": "Delay distributions",
+    "section": "",
+    "text": "Introduction to epidemiological delays",
+    "crumbs": [
+      "Delay distributions"
+    ]
+  },
+  {
+    "objectID": "sessions/delay-distributions.html#objectives",
+    "href": "sessions/delay-distributions.html#objectives",
+    "title": "Delay distributions",
+    "section": "Objectives",
+    "text": "Objectives\nThe aim of this session is for you to familiarise yourself with the concept of delay distributions used to describe reporting in infectious disease epidemiology. You will do this by working in R to simulate delays in the reporting of cases in an infectious disease outbreak, before using the simulation model in stan to estimate delays from a data set of outcomes.",
+    "crumbs": [
+      "Delay distributions"
+    ]
+  },
+  {
+    "objectID": "sessions/delay-distributions.html#libraries-used",
+    "href": "sessions/delay-distributions.html#libraries-used",
+    "title": "Delay distributions",
+    "section": "Libraries used",
+    "text": "Libraries used\nIn this session we will use the nfidd package to load a data set of infection times, the ggplot2 package for plotting, the dplyr and tidyr packages to wrangle data, the lubridate package to deal with dates, the here package to find the stan models, the cmdstanr package for using stan, and the posterior packages for investigating the results of the inference conducted with stan.\n\nlibrary(\"nfidd\")\nlibrary(\"ggplot2\")\nlibrary(\"dplyr\")\nlibrary(\"tidyr\")\nlibrary(\"lubridate\")\nlibrary(\"here\")\nlibrary(\"cmdstanr\")\nlibrary(\"posterior\")\n\n\n\n\n\n\n\nTip\n\n\n\nThe code in this session can be run as an interactive notebook using RStudio, or copied-and-pasted into an R session. It needs to be run inside the course repository so that the here() commands below find the stan model files.",
+    "crumbs": [
+      "Delay distributions"
+    ]
+  },
+  {
+    "objectID": "sessions/delay-distributions.html#simulating-delayed-epidemiological-data",
+    "href": "sessions/delay-distributions.html#simulating-delayed-epidemiological-data",
+    "title": "Delay distributions",
+    "section": "Simulating delayed epidemiological data",
+    "text": "Simulating delayed epidemiological data\nWe will start this session by working with a simulated data set of infections from a disease that has caused an outbreak which subsequently ended. In our example outbreak, there were 649 infections. The outbreak lasted around 90 days after the first infection, with new infections peaking roughly around day 40.\n\n\n\n\n\n\nNote\n\n\n\nFor now we will not concern ourselves with the model used to generate the epidemic. This represents a typical situation in the real world, where we may have a model of how an infection has spread, but we don’t know necessary know how well this corresponds to what really happened.\n\n\nWe will later deal with modelling the infectious process. For now, we will focus on modelling how infections get reported in data - the observation process. Using infectious disease data for analysis comes with three common challenges:\n\nWe don’t normally observe infections directly, but their outcomes as symptomatic cases, hospitalisations or other realisations.\nThese observations are incomplete (e.g. not every infection leads to hospitalisation, and so focusing on hospitalisations will leave infections unobserved)\nThese observations happen with a delay after the infection occurs (e.g. from infection to symptoms).\n\nWe will work with a data set that is included in the nfidd R package that you installed initially. The column infection_time is a linelist of infections from our example outbreak, given as a decimal number of days that have passed since the initial infection of the outbreak. It can be loaded with the data command.\n\ndata(infection_times)\nhead(infection_times)\n\n  infection_time\n1       0.000000\n2       2.236708\n3       4.091861\n4       7.347199\n5       8.990060\n6       4.635069\n\n### visualise the infection curve\nggplot(infection_times, aes(x = infection_time)) +\n  geom_histogram(binwidth = 1) +\n  scale_x_continuous(n.breaks = 45) +\n  xlab(\"Infection time (in days)\") +\n  ylab(\"Number of infections\")\n\n\n\n\n\n\n\n\n\n\n\n\n\n\nNote\n\n\n\nIn reality, data from an outbreak will usually be given as dates, not decimals; and those will usually not represent infection, but an observed outcome such as symptom onset or hospital admission. For now we don’t want to spend too much time manipulating dates in R, but we will get back to working with more realistic outbreak data later.\n\n\nWe would now like to simulate hospitalisations arising from this outbreak. We will make the following assumptions about the process from infection to hospital admission:\n\nInfection to symptoms:\n\nWe’ll assume all infections cause symptoms.\nTime from infection to symptom onset (incubation period): We assume that the incubation period is gamma-distributed with shape 5 and rate 1, i.e. a mean of 5 days.\n\nSymptoms to hospital admission:\n\nWe’ll assume that 30% of symptomatic cases become hospitalised.\nTime from symptom onset to hospital admission: We assume that the onset-to-hospitalisation period is lognormally distributed, with meanlog 1.75 and sdlog 0.5, corresponding to a mean delay of about a week.\n\n\n\n\n\n\n\n\nTake 10 minutes\n\n\n\nTry to add onset and hospitalisation times (in decimal number of days after the first infection) to the infection data.\n\n\n\n\n\n\n\n\nHints\n\n\n\n\n\n\nCreate two new columns in the data: onset_time and hosp_time. Each column should add the new time (onset or admission) to the previous time (infection or onset), using random values from the correct probability distribution. Use the rgamma and rlnorm functions we used in the last session.\nCases that don’t become hospitalised should have missing (NA) values for the admission time. This is a binary (1/0) outcome, so try drawing from the binomial distribution with the rbinom function to create a random distribution of missing values in your column of admission times.\n\n\n\n\n\n\n\n\n\n\nSolution\n\n\n\n\n\n\n# Load data\ndata(infection_times)\n\n### first, choose random delays\ndf &lt;- infection_times |&gt;\n  mutate(\n    onset_time = infection_time + rgamma(n(), shape = 5, rate = 1),\n    hosp_time = onset_time + rlnorm(n(), meanlog = 1.75, sdlog = 0.5)\n  )\n### next, set 70% of the hospitalization dates to NA because only 30∞ of cases\n### are hospitalized\ndf &lt;- df |&gt;\n  mutate(\n    hosp_time = if_else(\n      rbinom(n = n(), size = 1, p = 0.3) == 1,\n      hosp_time,\n      NA_real_\n    )\n  )\n\n\n\n\nNow we can plot infections, hospitalisations and onsets. To do so we first convert our data frame to long format.\n\ndfl &lt;- df |&gt;\n  pivot_longer(\n    cols = c(infection_time, onset_time, hosp_time),\n    names_to = \"type\", values_to = \"time\"\n  )\nggplot(dfl, aes(x = time)) +\n  geom_histogram(position = \"dodge\", binwidth = 1) +\n  facet_wrap(~ type, ncol = 1) +\n  xlab(\"Time (in days)\") +\n  ylab(\"Count\")\n\nWarning: Removed 461 rows containing non-finite outside the scale range\n(`stat_bin()`).",
+    "crumbs": [
+      "Delay distributions"
+    ]
+  },
+  {
+    "objectID": "sessions/delay-distributions.html#estimating-delay-distributions",
+    "href": "sessions/delay-distributions.html#estimating-delay-distributions",
+    "title": "Delay distributions",
+    "section": "Estimating delay distributions",
+    "text": "Estimating delay distributions\nAs mentioned above, our data set of infection, onset and hospitalisation times is not the typical data set we encounter in outbreaks. In reality, we don’t have infection dates, and we also have to deal with missing data, incomplete observations, data entry errors etc.\nFor now, let us just assume we have a data set of symptom onset times and some hospitalisation times, and we would like to estimate how long it takes for people to become hospitalised after becoming symptomatic. This might be an important delay to know about, for example when modelling and forecasting hospitalisations, or more generally for estimating required hospital capacity.\nTo do this we can use the same model as in the session on delay distributions, assuming (or knowing, in this instance) that the delays follows a lognormal distribution.\n\nmod &lt;- cmdstan_model(here(\"stan\", \"lognormal.stan\"))\n\n\n\n\n\n\n\nTake 5 minutes\n\n\n\nEstimate the onset-to-hospitalisation delay using the simulated data set we created above. Do you recover the parameters used for simulation?\n\n\n\n\n\n\n\n\nHints\n\n\n\n\n\nTip 1: First create a new column giving the time from onset to hospitalisation Tip 2: As in the last session, we can use our dataset to sample from the model posterior. Here we also need to exclude infections that didn’t result in hospitalisation (try using na.omit() around the data).\n\n\n\n\n\n\n\n\n\nSolution\n\n\n\n\n\nYou can sample from the model’s posterior distribution by feeding it our simulated data set.\n\n## Time from onset to hospitalisation\ndf_onset_to_hosp &lt;- df |&gt;\n  mutate(onset_to_hosp = hosp_time - onset_time)\n## Use the data to sample from the model posterior\nres &lt;- mod$sample(\n  data = list(\n    n = nrow(na.omit(df_onset_to_hosp)),\n    y = na.omit(df_onset_to_hosp)$onset_to_hosp\n  ),\n  refresh = 0, show_exceptions = FALSE, show_messages = FALSE\n)\n\n\n\n\n\n\n\nReduce the amount of messages printed to the screen\n\n\n\nAs before the arguments to mod$sample() after the data argument are there to remove the amount printed to the screen (and in this document). You can safely remove them.\n\n\nTo see the estimates, we can use:\n\nres$summary()\n\n# A tibble: 3 × 10\n  variable     mean   median     sd    mad       q5      q95  rhat ess_bulk\n  &lt;chr&gt;       &lt;dbl&gt;    &lt;dbl&gt;  &lt;dbl&gt;  &lt;dbl&gt;    &lt;dbl&gt;    &lt;dbl&gt; &lt;dbl&gt;    &lt;dbl&gt;\n1 lp__     -136.    -135.    0.951  0.720  -138.    -135.     1.00    1974.\n2 meanlog     1.75     1.75  0.0361 0.0356    1.69     1.81   1.00    3506.\n3 sdlog       0.500    0.498 0.0253 0.0257    0.460    0.543  1.00    3576.\n# ℹ 1 more variable: ess_tail &lt;dbl&gt;\n\n\nThese estimates should look similar to what we used in the simulations. We can plot the resulting probability density functions.\n\n## get shape and rate samples\ndf &lt;- res |&gt;\n  as_draws_df() |&gt;\n  filter(.draw %in% sample(.draw, 20)) ## sample 20 iterations randomly\n\n## find the value (x) that includes 99% of the cumulative density\nmax_x &lt;- max(qlnorm(0.99, meanlog = df$meanlog, sdlog = df$sdlog))\n\n## calculate density on grid of x values\nx &lt;- seq(0, max_x, length.out = 100)\ndf &lt;- df |&gt;\n  crossing(x = x) |&gt; ## add grid to data frame\n  mutate(density = dlnorm(x, meanlog, sdlog))\n\n## plot\nggplot(df, aes(x = x, y = density, group = .draw)) +\n  geom_line(alpha = 0.3)",
+    "crumbs": [
+      "Delay distributions"
+    ]
+  },
+  {
+    "objectID": "sessions/delay-distributions.html#going-further",
+    "href": "sessions/delay-distributions.html#going-further",
+    "title": "Delay distributions",
+    "section": "Going further",
+    "text": "Going further\n\nIn this session we were in the enviable situation of knowing which distribution was used to generate the data. With real data, of course, we don’t have this information available. Try using a different distribution for inference (e.g. normal, or gamma). Do you get a good fit?",
+    "crumbs": [
+      "Delay distributions"
+    ]
+  },
+  {
+    "objectID": "sessions/delay-distributions.html#wrap-up",
+    "href": "sessions/delay-distributions.html#wrap-up",
+    "title": "Delay distributions",
+    "section": "Wrap up",
+    "text": "Wrap up",
+    "crumbs": [
+      "Delay distributions"
+    ]
+  },
+  {
+    "objectID": "sessions/methods-in-the-real-world.html",
+    "href": "sessions/methods-in-the-real-world.html",
+    "title": "Methods in the real world",
+    "section": "",
+    "text": "The aim of this session is to provide an overview of the different methods that are used in the real world from the perspective of the course instructors.",
+    "crumbs": [
+      "Methods in the real world"
+    ]
+  },
+  {
+    "objectID": "sessions/R-Stan-and-statistical-concepts.html",
+    "href": "sessions/R-Stan-and-statistical-concepts.html",
+    "title": "Probability distributions and parameter estimation",
+    "section": "",
+    "text": "Introduction to statistical concepts used in the course\nIntroduction to stan concepts used in the course",
+    "crumbs": [
+      "Probability distributions and parameter estimation"
+    ]
+  },
+  {
+    "objectID": "sessions/R-Stan-and-statistical-concepts.html#objectives",
+    "href": "sessions/R-Stan-and-statistical-concepts.html#objectives",
+    "title": "Probability distributions and parameter estimation",
+    "section": "Objectives",
+    "text": "Objectives\nThe aim of this session is to introduce the concept of probability distributions and how to estimate their parameters using Bayesian inference with stan.",
+    "crumbs": [
+      "Probability distributions and parameter estimation"
+    ]
+  },
+  {
+    "objectID": "sessions/R-Stan-and-statistical-concepts.html#libraries-used",
+    "href": "sessions/R-Stan-and-statistical-concepts.html#libraries-used",
+    "title": "Probability distributions and parameter estimation",
+    "section": "Libraries used",
+    "text": "Libraries used\nIn this session we will use the ggplot2 library for plotting, the here library to find the stan model, and the cmdstanr library for using stan. We will also use the bayesplot and posterior packages for investigating the results of the inference conducted with stan.\n\nlibrary(\"ggplot2\")\nlibrary(\"here\")\nlibrary(\"cmdstanr\")\nlibrary(\"bayesplot\")\nlibrary(\"posterior\")\n\n\n\n\n\n\n\nTip\n\n\n\nThe code in this session can be run as an interactive notebook using RStudio, or copied-and-pasted into an R session. It needs to be run inside the course repository so that the here() commands below find the stan model files.",
+    "crumbs": [
+      "Probability distributions and parameter estimation"
+    ]
+  },
+  {
+    "objectID": "sessions/R-Stan-and-statistical-concepts.html#simulating-data-from-a-probability-distribution",
+    "href": "sessions/R-Stan-and-statistical-concepts.html#simulating-data-from-a-probability-distribution",
+    "title": "Probability distributions and parameter estimation",
+    "section": "Simulating data from a probability distribution",
+    "text": "Simulating data from a probability distribution\nFirst let us simulate some data from a probability distribution. In R, this can is usually done using a family of functions that start with r. For example, to simulate from a normal distribution you would use the rnorm() function. All these functions have a first argument n, the number of random replicates to generate, and then some further arguments that parameterise the probability distribution.\n\nrnorm(n = 10, mean = 0, sd = 1)\n\n [1]  0.214958687 -0.539337481 -1.269046047 -0.379584090 -0.007676176\n [6]  0.156838001  0.953708123  0.366184833  0.616663204 -2.380809990\n\n\nWe will use probability distributions to characterise epidemiological delays. These are usually strictly positive because e.g. one cannot develop symptoms before becoming infected, and therefore the incubation period cannot be less than zero (although it is worth noting that this does not necessarily apply to all distributions, e.g. serial intervals can be negative if person X infects Y but Y develops symptoms first).\nProbability distribution that are commonly used in this situation are the gamma or lognormal distributions. These are fairly similar, with one difference being that the lognormal commonly has a “heavier tail” on the right, i.e. gives more probability to occasional very large values, whereas the gamma distribution as more of a tail on the left, i.e. gives more probability to values lower than the mean.\nThe gamma distribution is characterised by the shape (\\(\\alpha\\)) and rate (\\(\\beta\\)) parameters, with a mean of \\(\\alpha/\\beta\\) and variance \\(\\alpha/\\beta^2\\). A gamma distribution with mean 5 and variance 2, for example, has \\(\\alpha = 12.5\\) and \\(\\beta = 2.5\\). To simulate from such a distribution, we can use the following R code.\n\n### simulate gamma with mean 5, variance 2\ngammas &lt;- rgamma(100, shape = 12.5, rate = 2.5)\nhead(gammas)\n\n[1]  6.657763  3.311606  3.109458  3.179683  2.664725 11.607107\n\nmean(gammas)\n\n[1] 5.018457\n\nvar(gammas)\n\n[1] 2.042826\n\n\nThe lognormal distribution is characterised by the meanlog (\\(\\mu\\)) and sdlog (\\(\\sigma\\)) parameters, with a mean of \\(e^{\\mu + 0.5\\sigma^2}\\) and variance \\((e^{\\sigma^2} - 1) e^{2\\mu + \\sigma^2}\\). A lognormal distribution with mean 5 and variance 2, for example, has (after a bit of calculation) \\(\\mu = 1.57\\) and \\(\\sigma = 0.28\\).\n\n### simulate gamma with mean 5, variance 2\nlognormals &lt;- rlnorm(100, meanlog = 1.57, sdlog = 0.28)\nhead(lognormals)\n\n[1] 4.006968 2.754063 2.916571 5.881378 4.022695 7.571720\n\nmean(lognormals)\n\n[1] 5.014414\n\nvar(lognormals)\n\n[1] 2.004165\n\n\nWe can now plot the two distributions.\n\ndf &lt;- rbind(\n  data.frame(dist = \"lognormal\", randoms = lognormals),\n  data.frame(dist = \"gamma\", randoms = gammas)\n)\nggplot(df, aes(x = randoms, fill = dist)) +\n  geom_density(alpha = 0.5)\n\n\n\n\n\n\n\n\nWe have used geom_density() to get smooth lines. Alternatively we could have used, e.g., geom_histogram() to plot the raw data.",
+    "crumbs": [
+      "Probability distributions and parameter estimation"
+    ]
+  },
+  {
+    "objectID": "sessions/R-Stan-and-statistical-concepts.html#estimating-the-parameters-of-probability-distributions",
+    "href": "sessions/R-Stan-and-statistical-concepts.html#estimating-the-parameters-of-probability-distributions",
+    "title": "Probability distributions and parameter estimation",
+    "section": "Estimating the parameters of probability distributions",
+    "text": "Estimating the parameters of probability distributions\nWe will now use stan to estimate the parameters of the probability distribution. To do so, we first load in the model\n\n### load gamma model from the session directory\nmod &lt;- cmdstan_model(here(\"stan\", \"gamma.stan\"))\n### show model code with line numbers\nmod$print(line_numbers = TRUE)\n\n 1: // gamma_model.stan\n 2: data {\n 3:   int&lt;lower=0&gt; N;\n 4:   array[N] real y;\n 5: }\n 6: \n 7: parameters {\n 8:   real&lt;lower=0&gt; alpha;\n 9:   real&lt;lower=0&gt; beta;\n10: }\n11: \n12: model {\n13:   alpha ~ normal(0, 10);\n14:   beta ~ normal(0, 10);\n15:   y ~ gamma(alpha, beta);\n16: }\n\n\n\n\n\n\n\n\nTake 5 minutes\n\n\n\nFamilarise yourself with the model above. Do you understand all the lines? Which line(s) define the parameter prior distribution(s), which one(s) the likelihood, and which one(s) the data that has to be supplied to the model?\n\n\n\n\n\n\n\n\nSolution\n\n\n\n\n\nLines 13 and 14 define the parametric prior distributions (for parameters alpha and beta). Line 15 defines the likelihood. Lines 3 and 4 define the data that has to be supplied to the model.\n\n\n\nWe use the model we have defined in conjunction with the gamma distributed random numbers generated earlier to see if we can recover the parameters of the gamma distribution used. Once you have familiarised yourself with the model, use the sample() function to fit the model.\n\nstan_data &lt;- list(\n  N = length(gammas),\n  y = gammas\n)\ngamma_fit &lt;- mod$sample(\n  data = stan_data, refresh = 0, show_exceptions = FALSE, show_messages = FALSE\n)\ngamma_fit\n\n variable    mean  median   sd  mad      q5     q95 rhat ess_bulk ess_tail\n    lp__  -170.75 -170.43 1.05 0.73 -172.98 -169.76 1.00     1074     1303\n    alpha   12.91   12.82 1.79 1.79   10.09   15.94 1.01      565      604\n    beta     2.57    2.56 0.36 0.37    1.99    3.20 1.01      562      600\n\n\n\n\n\n\n\n\nCaution\n\n\n\nThe arguments to mod$sample() after the data argument are there to remove the amount printed to the screen (and in this document). You can remove them and you’ll get more messages from the stan sampler (which can be very useful for diagnosing and debugging).\n\n\nYou can see that the estimates are broadly consistent with the parameters we put in. To investigate this further, we will conduct a so-called posterior predictive check by comparing random numbers simulated using the estimated parameters to the ones we simulated earlier.\n\n## Extract posterior draws\ngamma_posterior &lt;- as_draws_df(gamma_fit$draws())\nhead(gamma_posterior)\n\n# A draws_df: 6 iterations, 1 chains, and 3 variables\n  lp__ alpha beta\n1 -170    12  2.4\n2 -170    15  3.0\n3 -170    15  3.0\n4 -170    14  2.8\n5 -170    11  2.2\n6 -170    12  2.4\n# ... hidden reserved variables {'.chain', '.iteration', '.draw'}\n\n## Generate posterior predictive samples\ngamma_ppc &lt;- sapply(seq_along(gammas), function(i) {\n  rgamma(n = length(gammas),\n         shape = gamma_posterior$alpha[i],\n         rate = gamma_posterior$beta[i])\n})\n\n## Plot posterior predictive check\nppc_dens_overlay(y = gammas, yrep = gamma_ppc)\n\n\n\n\n\n\n\n\nWe can see that the random numbers generated from the posterior samples are distributed relatively evenly around the data (in black), i.e. the samples generated earlier that we fitted to.",
+    "crumbs": [
+      "Probability distributions and parameter estimation"
+    ]
+  },
+  {
+    "objectID": "sessions/R-Stan-and-statistical-concepts.html#going-further",
+    "href": "sessions/R-Stan-and-statistical-concepts.html#going-further",
+    "title": "Probability distributions and parameter estimation",
+    "section": "Going further",
+    "text": "Going further\n\nFor the model above we chose truncated normal priors with a mode at 0 and standard deviation 10. If you change the parameters of the prior distributions, does it affect the results?\nYou could try the model included in lognormal.stan to estimate parameters of the lognormal distribution.",
+    "crumbs": [
+      "Probability distributions and parameter estimation"
+    ]
+  },
+  {
+    "objectID": "sessions/R-Stan-and-statistical-concepts.html#wrap-up",
+    "href": "sessions/R-Stan-and-statistical-concepts.html#wrap-up",
+    "title": "Probability distributions and parameter estimation",
+    "section": "Wrap up",
+    "text": "Wrap up",
+    "crumbs": [
+      "Probability distributions and parameter estimation"
+    ]
+  },
+  {
+    "objectID": "sessions/forecasting-models.html",
+    "href": "sessions/forecasting-models.html",
+    "title": "Forecasting models",
+    "section": "",
+    "text": "Objectives\nThe aim of this session is to introduce some common forecasting models and to evaluate them.\n\n\nLibraries used\nIn this session we will use the nfidd package to load the data set of infection times, the dplyr and tidyr packages for data wrangling, ggplot2 library for plotting, the here library to find the stan model, and the cmdstanr library for using stan. We will also use the tidybayes package for extracting results of the inference.\n\nlibrary(\"nfidd\")\nlibrary(\"dplyr\")\nlibrary(\"tidyr\")\nlibrary(\"ggplot2\")\nlibrary(\"here\")\nlibrary(\"cmdstanr\")\nlibrary(\"tidybayes\")\n\n\n\n\n\n\n\nTip\n\n\n\nThe code in this session can be run as an interactive notebook using RStudio, or copied-and-pasted into an R session. It needs to be run inside the course repository so that the here() commands below find the stan model files.\n\n\n\n\nGoing further\n\n\nWrap up",
+    "crumbs": [
+      "Forecasting models"
+    ]
+  },
+  {
+    "objectID": "sessions/introduction-and-course-overview.html",
+    "href": "sessions/introduction-and-course-overview.html",
+    "title": "Introduction and course overview",
+    "section": "",
+    "text": "Introduction to the course and the instructors\nFrom an epidemiological line list to informing decisions in real-time",
+    "crumbs": [
+      "Introduction and course overview"
+    ]
+  },
+  {
+    "objectID": "index.html",
+    "href": "index.html",
+    "title": "Nowcasting and forecasting infectious disease dynamics",
+    "section": "",
+    "text": "A course and living resource for learning about nowcasting and forecasting infectious disease dynamics.\nAll the materials here are provided under MIT License. We invite people to use the materials here in their own teaching. We welcome all forms of contributions, additions and suggestions people might have for improving the materials."
+  }
+]
