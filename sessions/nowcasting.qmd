@@ -352,14 +352,19 @@ plot(reporting_delay_pmf)
 We can then simulate the reporting triangle:
 
 ```{r simulate-reporting-triangle}
+# Simulate reported onsets, using onset data and reporting delay PMF
 reporting_triangle <- onset_df |>
   filter(day < cutoff) |>
+  # for each day of known onsets, expand the matrix of daily reporting probabilities
   mutate(
     reporting_delay = list(tibble(d = 0:15, reporting_delay = reporting_delay_pmf)
   )) |>
   unnest(reporting_delay) |>
   mutate(
-    reported_onsets = rpois(n(), onsets * reporting_delay)
+    # get onsets reported each day
+    reported_onsets = onsets * reporting_delay,
+    # add Poisson observation error
+    noisy_reported_onsets = rpois(n(), reported_onsets)
   ) |>
   mutate(reported_day = day + d)
 ```
@@ -471,13 +476,13 @@ We will use the same distributions as in the [renewal session](R-estimation-and-
 These are: 
 
 ```{r gt}
-plot(gen_time_pmf)
+plot(gen_time_pmf, main = "Generation time PMF")
 ```
 
 and
 
 ```{r ip}
-plot(ip_pmf)
+plot(ip_pmf, main = "Incubation period PMF")
 ```
 
 We now load in the model:
@@ -540,7 +545,9 @@ noisy_onsets_df |>
   ggplot(aes(x = day, y = noisy_onsets)) +
   geom_col() +
   geom_ribbon(aes(ymin = lower, ymax = upper), alpha = 0.5) +
-  geom_line(aes(y = median))
+  geom_line(aes(y = median), alpha = 0.5) +
+    labs(title = "Symptom onsets: joint estimation nowcast",
+       subtitle = "Actual (bar) and nowcast (median and 90%CrI, shaded)")
 ```
 
 We can also extract the reproduction number and plot it:
@@ -559,7 +566,8 @@ joint_rt <- joint_rt_fit |>
 
 ggplot(joint_rt, aes(x = day, y = median)) +
   geom_line() +
-  geom_ribbon(aes(ymin = lower, ymax = upper), alpha = 0.5)
+  geom_ribbon(aes(ymin = lower, ymax = upper), alpha = 0.5) +
+  labs(title = "Reproduction number: joint estimation nowcast")
 ```
 
 ::: {.callout-tip}
@@ -572,7 +580,7 @@ What about the reproduction number?
 ::: {.callout-note collapse="true"}
 ## Solution
 - Whilst the majority of the nowcast is similar we see that the nowcast for days nearer to the present is more accurate as this model is able to capture the trend in infections and account for delays from infection to onset and onset to report.
-- The key takeway from the reproductio number plot is that it looks similar to the one we estimated in the [renewal session](R-estimation-and-the-renewal-equation).
+- The key takeaway from the reproduction number plot is that it looks similar to the one we estimated in the [renewal session](R-estimation-and-the-renewal-equation).
 This is because we have accounted for the truncation (otherwise it would be spuriously decreasing towards the end of the timeseries).
 :::
 
